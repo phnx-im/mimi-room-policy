@@ -37,7 +37,8 @@ pub enum Capability {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    Kick,                                         // Removes all their roles
+    Join,                                         // Give set of default roles
+    Kick,                                         // Drops all their roles
     GiveRole { target: String, role: RoleIndex }, // E.g. Admins can add moderators
     DropRole { target: String, role: RoleIndex }, // E.g. Admins can remove moderators
 
@@ -51,12 +52,13 @@ pub enum Action {
 #[repr(u8)]
 pub enum RoleIndex {
     Outsider = 0,  // For users not in the room
-    Visitor = 1,   // Default for new members in public rooms
-    Regular = 2,   // For approved members or new members in invite-only rooms
-    Moderator = 3, // Extends regular
-    Admin = 4,     // Extends moderator
-    Owner = 5,     // Extends owner
-    Custom(u16),
+    Disabled = 1,  // For who were timed out
+    Visitor = 2,   // Default for new members in public rooms
+    Regular = 3,   // For approved members or new members in invite-only rooms
+    Moderator = 4, // Extends regular
+    Admin = 5,     // Extends moderator
+    Owner = 6,     // Extends owner
+    Custom(u16),   // Custom roles
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -65,7 +67,7 @@ pub struct Role {
     role_description: String,
     role_capabilities: Vec<Capability>, // TODO: This could also be a bitvector
     dependencies: Vec<RoleIndex>,       // What roles are required to have this role
-    auto_expires: Option<Timestamp>,    // Timestamp after which this role is no longer active
+    auto_expires_after: Option<Timestamp>, // Timestamp after which this role is no longer active
     min: u32,
     max: Option<u32>,
     // min_active_participants_constraint: Option<u32>, // TODO: What does this mean?
@@ -85,14 +87,16 @@ pub struct PreAuthPerRoleList {
 pub struct RoomPolicy {
     roles: HashMap<RoleIndex, Role>,
     pre_auth_list: Vec<PreAuthPerRoleList>,
-    main_rate_limit: u32,
-    thread_rate_limit: u32,
+    main_rate_limit_ms: u32,
+    thread_rate_limit_ms: u32,
 }
 
+#[derive(Clone)]
 pub struct RoomState {
     policy: RoomPolicy,
     user_roles: HashMap<String, HashMap<RoleIndex, Timestamp>>,
 }
+
 impl RoomState {
     pub fn new(policy: &RoomPolicy, creator: &str) -> Self {
         let mut user_roles = HashMap::new();
@@ -111,50 +115,53 @@ impl RoomState {
     }
 
     pub fn user_capabilities(&self, user_id: &str) -> HashSet<Capability> {
-        let mut roles = vec![RoleIndex::Outsider];
+        let mut roles = HashMap::new();
 
         if let Some(assigned_roles) = self.user_roles.get(user_id) {
-            roles.extend(assigned_roles.iter())
+            roles.extend(assigned_roles);
+        } else {
+            roles.insert(RoleIndex::Outsider, 0);
         }
 
         let mut capabilities = HashSet::new();
 
-        for role in roles {
+        for (role, timestamp) in roles {
             let role_info = self.policy.roles.get(&role).ok_or(()).unwrap();
 
-            capabilities.extend(role_info.role_capabilities)
+            capabilities.extend(role_info.role_capabilities.iter())
         }
 
         capabilities
     }
 
-    pub fn user_has_role(&self, user_id: &str, role: RoleIndex) -> bool {
-        let role_info = self.policy.roles.get(&role).ok_or(())?;
-        self.user_roles
-            .get(user_id)
-            .and_then(|roles| roles.get(&role))
-            .is_some_and(|role_time| {
-                if let Some(expires_time) = role_info.auto_expires {
-                    role_time < &expires_time
-                } else {
-                    true
-                }
-            })
+    pub fn is_role_active(&self, user_id: &str, role: RoleIndex) -> Result<bool, ()> {
+        let Some(role_timestamp) = self.user_roles.get(user_id).ok_or(())?.get(&role) else {
+            // User does not have this role
+            return Ok(false);
+        };
+
+        let role_info = self
+            .policy
+            .roles
+            .get(&role)
+            .expect("all assigned roles are defined in the policy");
+
+        if let Some(expires_after) = role_info.auto_expires_after {
+            // Role may have expired
+            Ok(self.timestamp - role_timestamp <= &expires_after)
+        } else {
+            // Role cannot expire
+            Ok(true)
+        }
     }
 
     pub fn give_user_role(&mut self, user_id: &str, role: RoleIndex) -> Result<(), ()> {
-        let role_info = self.policy.roles.get(&role).ok_or(())?;
-        for dependency in &role_info.dependencies {
-            if !self.user_has_role(user_id, *dependency) {
-                return Err(());
-            }
-        }
-
         if self
             .user_roles
             .entry(user_id.to_owned())
             .or_default()
-            .insert(role)
+            .insert(role, self.current_timestamp)
+            .is_none()
         {
             Ok(())
         } else {
@@ -162,49 +169,72 @@ impl RoomState {
         }
     }
 
-    pub fn make_actions(&mut self, user_id: &str, actions: &[Action]) -> Result<(), ()> {
-        let user_capabilities = self.user_capabilities(user_id);
+    pub fn role_dependency_checks(&self, user_ids: &[&str]) -> Result<(), ()> {
+        for (user_id, roles) in self.user_roles {
+            for (role, timestamp) in roles {
+                if !self.is_role_active(&user_id, role)? {
+                    continue;
+                }
 
-        for c in user_capabilities {
-            if let Capability::Disabled = c {
-                // TODO: Check duration
-                return Err(());
+                let role_info = self.policy.roles.get(&role).ok_or(())?;
+                for dependency in &role_info.dependencies {
+                    if roles.contains_key(dependency)
+                    if !self.user_has_role(user_id, *dependency) {
+                        return Err(());
+                    }
+                }
             }
         }
 
+        Ok(())
+    }
+
+    pub fn make_actions(&mut self, user_id: &str, actions: &[Action]) -> Result<(), ()> {
+        let user_capabilities = self.user_capabilities(user_id);
+
+        if user_capabilities.contains(&Capability::Disabled) {
+            return Err(());
+        }
+
+        let mut new_state = self.clone();
+
         for action in actions {
             match action {
-                Action::Kick { duration } => {
-                    let mut capable = false;
-
-                    for c in user_capabilities {
-                        if let Capability::Kick { max_duration } = c {
-                            if duration <= max_duration {
-                                capable = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if !capable {
+                Action::Join => {}
+                Action::Kick => {
+                    if !user_capabilities.contains(&Capability::Kick) {
                         return Err(());
                     }
 
                     todo!();
                 }
-                Capability::GiveRole { role } | Capability::GiveRoleSelf { role } => {
-                    self.give_user_role(user_id, *role)
+                Action::GiveRole { target, role } => {
+                    new_state.give_user_role(user_id, *role)?;
                 }
-                Capability::DropRole { role } => todo!(),
-                Capability::DropRoleSelf { role } => todo!(),
-                Capability::GiveAnyRole => todo!(),
-                Capability::DropAnyRole => todo!(),
-                Capability::ReadMessage => todo!(),
-                Capability::SendMessage => todo!(),
-                Capability::EditMessage => todo!(),
-                Capability::IgnoreRatelimit | Capability::Disabled { .. } => return Err(()),
+                Action::DropRole { target, role } => {
+                    new_state.drop_user_role(user_id, *role)?;
+                }
+                Action::ReadMessage => {
+                    if !user_capabilities.contains(&Capability::ReadMessage) {
+                        return Err(());
+                    }
+                }
+                Action::SendMessage => {
+                    if !user_capabilities.contains(&Capability::SendMessage) {
+                        return Err(());
+                    }
+                }
+                Action::EditMessage => {
+                    if !user_capabilities.contains(&Capability::EditMessage) {
+                        return Err(());
+                    }
+                }
             }
         }
+
+        self.role_dependency_checks()?;
+
+        Ok(())
     }
 }
 
@@ -298,15 +328,15 @@ mod tests {
 
         let policy = RoomPolicy {
             roles,
-            main_rate_limit: 10,  // wait 10 seconds after every message
-            thread_rate_limit: 0, // no need to wait in threads
+            main_rate_limit_ms: 10000, // wait 10 seconds after every message
+            thread_rate_limit_ms: 100, // almost no delay in threads
             pre_auth_list: vec![],
         };
 
         let mut room_state = RoomState::new(&policy, "@timo:phnx.im");
 
         room_state
-            .use_capability("@spam:phnx.im", &Capability::Join)
+            .make_actions("@spam:phnx.im", &[Action::Join])
             .unwrap();
     }
 }
