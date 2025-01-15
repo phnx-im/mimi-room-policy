@@ -4,7 +4,10 @@
 
 //! # Mimi Room Policy
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+};
 
 /// An error returned from room policy operations.
 #[derive(Debug)]
@@ -258,6 +261,9 @@ pub enum PolicyTemplate {
     ParentDependent,
 }
 
+/// The state of the room. The consistency checks verifed that the state is valid.
+pub struct VerifiedRoomState(RoomState);
+
 impl RoomState {
     /// Construct a new room using the specified template.
     pub fn new_from_template(owner: &str, template: PolicyTemplate) -> Self {
@@ -457,14 +463,10 @@ impl RoomState {
 
         user_roles.insert(owner.to_owned(), owner_roles);
 
-        let mut this = Self {
+        Self {
             policy: policy.clone(),
             user_roles,
-        };
-
-        this.consistency_checks().unwrap();
-
-        this
+        }
     }
 
     /// Returns true if the user has the Moderator role.
@@ -575,7 +577,7 @@ impl RoomState {
         }
     }
 
-    fn consistency_checks(&mut self) -> Result<()> {
+    fn consistency_checks(mut self) -> Result<VerifiedRoomState> {
         let mut role_counts = HashMap::new();
         // Role dependencies
         for roles_of_user in self.user_roles.values() {
@@ -601,72 +603,67 @@ impl RoomState {
         // Drop users that have no role
         self.user_roles.retain(|_user_id, roles| !roles.is_empty());
 
-        Ok(())
+        Ok(VerifiedRoomState(self))
     }
 
-    /// Applies the list of actions in the given order.
-    ///
-    /// After all actions are done, consistency checks will validate the room state.
-    pub fn make_actions(&mut self, user_id: &str, actions: &[Action]) -> Result<()> {
-        let mut new_state = self.clone();
-
+    /// Applies the list of actions in the given order. This will not verify consistency.
+    pub fn try_make_actions(mut self, user_id: &str, actions: &[Action]) -> Result<Self> {
         for action in actions {
             match action {
                 Action::Join => {
                     // TODO: Check capability
 
-                    for role in new_state.policy.default_roles.clone() {
-                        new_state.give_user_role(user_id, role)?;
+                    for role in self.policy.default_roles.clone() {
+                        self.give_user_role(user_id, role)?;
                     }
                 }
                 Action::Kick { target } => {
-                    if user_id != target && !new_state.is_capable(user_id, Capability::Kick)? {
+                    if user_id != target && !self.is_capable(user_id, Capability::Kick)? {
                         return Err(Error::NotCapable);
                     }
 
-                    if new_state.is_protected_from(user_id, target)? {
+                    if self.is_protected_from(user_id, target)? {
                         return Err(Error::NotCapable);
                     }
 
-                    for role in new_state
+                    for role in self
                         .user_roles
                         .get(target)
                         .ok_or(Error::UserNotInRoom)?
                         .clone()
                     {
-                        new_state.drop_user_role(target, role)?;
+                        self.drop_user_role(target, role)?;
                     }
                 }
                 Action::GiveRole { target, role } => {
                     let valid_to_self = target == user_id
-                        && new_state
-                            .is_capable(user_id, Capability::GiveRoleSelf { role: *role })?;
+                        && self.is_capable(user_id, Capability::GiveRoleSelf { role: *role })?;
 
                     let valid_to_other =
-                        new_state.is_capable(user_id, Capability::GiveRoleOther { role: *role })?;
-                    // TODO: Do we want protection here? && !new_state.is_protected_from(user_id, target)?;
+                        self.is_capable(user_id, Capability::GiveRoleOther { role: *role })?;
+                    // TODO: Do we want protection here? && !self.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
                         return Err(Error::NotCapable);
                     }
 
-                    new_state.give_user_role(target, *role)?;
+                    self.give_user_role(target, *role)?;
                 }
                 Action::DropRole { target, role } => {
                     let valid_to_self = target == user_id;
 
-                    let valid_to_other = new_state
+                    let valid_to_other = self
                         .is_capable(user_id, Capability::DropRoleOther { role: *role })?
-                        && !new_state.is_protected_from(user_id, target)?;
+                        && !self.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
                         return Err(Error::NotCapable);
                     }
 
-                    new_state.drop_user_role(target, *role)?;
+                    self.drop_user_role(target, *role)?;
                 }
                 Action::SendMessage { message_type } => {
-                    if !new_state.is_capable(
+                    if !self.is_capable(
                         user_id,
                         Capability::SendMessage {
                             message_type: *message_type,
@@ -682,11 +679,10 @@ impl RoomState {
                 }
                 Action::EditMessage { target } => {
                     let valid_to_self = target == user_id
-                        && new_state.is_capable(user_id, Capability::EditMessageSelf)?;
+                        && self.is_capable(user_id, Capability::EditMessageSelf)?;
 
-                    let valid_to_other = new_state
-                        .is_capable(user_id, Capability::EditMessageOther)?
-                        && !new_state.is_protected_from(user_id, target)?;
+                    let valid_to_other = self.is_capable(user_id, Capability::EditMessageOther)?
+                        && !self.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
                         return Err(Error::NotCapable);
@@ -699,11 +695,11 @@ impl RoomState {
 
                 Action::DeleteMessage { target } => {
                     let valid_to_self = target == user_id
-                        && new_state.is_capable(user_id, Capability::DeleteMessageSelf)?;
+                        && self.is_capable(user_id, Capability::DeleteMessageSelf)?;
 
-                    let valid_to_other = new_state
+                    let valid_to_other = self
                         .is_capable(user_id, Capability::DeleteMessageOther)?
-                        && !new_state.is_protected_from(user_id, target)?;
+                        && !self.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
                         return Err(Error::NotCapable);
@@ -712,11 +708,39 @@ impl RoomState {
             }
         }
 
-        new_state.consistency_checks()?;
+        Ok(self)
+    }
+}
 
-        *self = new_state;
+impl VerifiedRoomState {
+    pub fn new_from_template(owner: &str, template: PolicyTemplate) -> Self {
+        let state = RoomState::new_from_template(owner, template);
+
+        state
+            .consistency_checks()
+            .expect("new_from_template is always valid")
+    }
+
+    pub fn new(owner: &str, policy: &RoomPolicy) -> Result<Self> {
+        let state = RoomState::new(owner, policy);
+
+        state.consistency_checks()
+    }
+
+    pub fn make_actions(&mut self, user_id: &str, actions: &[Action]) -> Result<()> {
+        let result = self.0.clone().try_make_actions(user_id, actions)?;
+
+        *self = result.consistency_checks()?;
 
         Ok(())
+    }
+}
+
+impl Deref for VerifiedRoomState {
+    type Target = RoomState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -727,7 +751,7 @@ mod tests {
     #[test]
     fn roles() {
         let mut room_state =
-            RoomState::new_from_template("@timo:phnx.im", PolicyTemplate::Announcement);
+            VerifiedRoomState::new_from_template("@timo:phnx.im", PolicyTemplate::Announcement);
 
         // Only the owner is in the room
         assert_eq!(room_state.joined_users(), vec!["@timo:phnx.im".to_owned()]);
