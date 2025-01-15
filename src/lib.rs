@@ -10,7 +10,7 @@ use std::{
 };
 
 /// An error returned from room policy operations.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error {
     /// The operation would have no effect.
     NothingToDo,
@@ -275,7 +275,7 @@ impl RoomState {
                 role_name: "Outsider".to_owned(),
                 role_description: "Not in the room".to_owned(),
                 role_capabilities: match template {
-                    PolicyTemplate::Public => vec![Capability::Join],
+                    PolicyTemplate::Announcement | PolicyTemplate::Public => vec![Capability::Join],
                     PolicyTemplate::Knock => vec![Capability::Knock],
                     _ => vec![],
                 },
@@ -483,8 +483,7 @@ impl RoomState {
         Ok(self
             .user_roles
             .get(user_id)
-            .ok_or(Error::UserNotInRoom)?
-            .contains(&RoleIndex::Admin))
+            .is_some_and(|list| list.contains(&RoleIndex::Admin)))
     }
 
     /// Returns true if the user has the Owner role.
@@ -497,15 +496,20 @@ impl RoomState {
     }
 
     /// Returns true if the target is protected from the actor:
-    /// - Owners are protected from everyone.
-    /// - Admins are protected from other admins.
-    /// - Moderators are protected from other moderators.
+    /// - Owners are protected.
+    /// - Admins are protected, except from the owner.
+    /// - Moderators are protected, except from admins.
+    /// - Users are not protected from themselves.
     ///
     /// Because all admins are also moderators, admins are protected from moderators.
     pub fn is_protected_from(&self, actor: &str, target: &str) -> Result<bool> {
+        if actor == target {
+            return Ok(false);
+        }
+
         Ok(self.is_owner(target)?
-            || self.is_admin(target)? && !self.is_admin(actor)?
-            || self.is_mod(target)? && !self.is_mod(actor)?)
+            || self.is_admin(target)? && !self.is_owner(actor)?
+            || self.is_mod(target)? && self.is_admin(actor)?)
     }
 
     /// The list of all capabilities of a user as determined by their roles.
@@ -534,10 +538,10 @@ impl RoomState {
 
     /// Returns true if the user has this capability explicitly or if they are an administrator.
     pub fn is_capable(&self, user_id: &str, capability: Capability) -> Result<bool> {
-        Ok(self.is_admin(user_id)?
-            || self
-                .user_explicit_capabilities(user_id)?
-                .contains(&capability))
+        Ok(self
+            .user_explicit_capabilities(user_id)?
+            .contains(&capability)
+            || self.is_admin(user_id)?)
     }
 
     /// Returns the sorted list of all users.
@@ -608,10 +612,14 @@ impl RoomState {
 
     /// Applies the list of actions in the given order. This will not verify consistency.
     pub fn try_make_actions(mut self, user_id: &str, actions: &[Action]) -> Result<Self> {
+        assert!(!actions.is_empty());
+
         for action in actions {
             match action {
                 Action::Join => {
-                    // TODO: Check capability
+                    if !self.is_capable(user_id, Capability::Join)? {
+                        return Err(Error::NotCapable);
+                    }
 
                     for role in self.policy.default_roles.clone() {
                         self.give_user_role(user_id, role)?;
@@ -641,7 +649,6 @@ impl RoomState {
 
                     let valid_to_other =
                         self.is_capable(user_id, Capability::GiveRoleOther { role: *role })?;
-                    // TODO: Do we want protection here? && !self.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
                         return Err(Error::NotCapable);
@@ -748,75 +755,212 @@ impl Deref for VerifiedRoomState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn roles() {
+    fn test_room() -> VerifiedRoomState {
         let mut room_state =
-            VerifiedRoomState::new_from_template("@timo:phnx.im", PolicyTemplate::Announcement);
+            VerifiedRoomState::new_from_template("@alice:phnx.im", PolicyTemplate::Public);
+
+        // @a, @b, @c @mod, @admin joins
+        room_state
+            .make_actions("@visitor:phnx.im", &[Action::Join])
+            .unwrap();
+        room_state
+            .make_actions("@regular:phnx.im", &[Action::Join])
+            .unwrap();
+        room_state
+            .make_actions("@mod:phnx.im", &[Action::Join])
+            .unwrap();
+        room_state
+            .make_actions("@admin:phnx.im", &[Action::Join])
+            .unwrap();
+
+        // Promote all users
+        room_state
+            .make_actions(
+                "@alice:phnx.im",
+                &[
+                    // Regular
+                    Action::GiveRole {
+                        target: "@regular:phnx.im".to_owned(),
+                        role: RoleIndex::Regular,
+                    },
+                    Action::GiveRole {
+                        target: "@mod:phnx.im".to_owned(),
+                        role: RoleIndex::Regular,
+                    },
+                    Action::GiveRole {
+                        target: "@admin:phnx.im".to_owned(),
+                        role: RoleIndex::Regular,
+                    },
+                    // Moderator
+                    Action::GiveRole {
+                        target: "@mod:phnx.im".to_owned(),
+                        role: RoleIndex::Moderator,
+                    },
+                    Action::GiveRole {
+                        target: "@admin:phnx.im".to_owned(),
+                        role: RoleIndex::Moderator,
+                    },
+                    // Admin
+                    Action::GiveRole {
+                        target: "@admin:phnx.im".to_owned(),
+                        role: RoleIndex::Admin,
+                    },
+                ],
+            )
+            .unwrap();
+
+        room_state
+    }
+
+    #[test]
+    fn invite_only_room() {
+        let mut room_state =
+            VerifiedRoomState::new_from_template("@alice:phnx.im", PolicyTemplate::InviteOnly);
 
         // Only the owner is in the room
-        assert_eq!(room_state.joined_users(), vec!["@timo:phnx.im".to_owned()]);
+        assert_eq!(room_state.joined_users(), vec!["@alice:phnx.im".to_owned()]);
 
-        // @spam joins
+        // @bob cannot join
+        assert_eq!(
+            room_state.make_actions("@bob:phnx.im", &[Action::Join]),
+            Err(Error::NotCapable)
+        );
+    }
+
+    #[test]
+    fn setup_public_room() {
+        let mut room_state =
+            VerifiedRoomState::new_from_template("@alice:phnx.im", PolicyTemplate::Announcement);
+
+        // Only the owner is in the room
+        assert_eq!(room_state.joined_users(), vec!["@alice:phnx.im".to_owned()]);
+
+        // @bob joins
         room_state
-            .make_actions("@spam:phnx.im", &[Action::Join])
+            .make_actions("@bob:phnx.im", &[Action::Join])
             .unwrap();
 
         // Now both are in the room
         assert_eq!(
             room_state.joined_users(),
-            vec!["@spam:phnx.im".to_owned(), "@timo:phnx.im".to_owned()]
+            vec!["@alice:phnx.im".to_owned(), "@bob:phnx.im".to_owned()]
         );
 
-        // @spam has the default role: Visitor
+        // @bob has the default role: Visitor
         assert!(room_state
             .user_roles
-            .get("@spam:phnx.im")
+            .get("@bob:phnx.im")
             .unwrap()
             .contains(&RoleIndex::Visitor));
 
         // Visitors can only read, not send
-        room_state.make_actions("@spam:phnx.im", &[]).unwrap();
-        room_state
-            .make_actions(
-                "@spam:phnx.im",
+        assert_eq!(
+            room_state.make_actions(
+                "@bob:phnx.im",
                 &[Action::SendMessage {
                     message_type: MessageType::Image,
                 }],
-            )
-            .unwrap_err();
+            ),
+            Err(Error::NotCapable)
+        );
 
-        // The owner promotes @spam to a regular user
+        // The owner promotes @bob to a regular user
         room_state
             .make_actions(
-                "@timo:phnx.im",
+                "@alice:phnx.im",
                 &[Action::GiveRole {
-                    target: "@spam:phnx.im".to_owned(),
+                    target: "@bob:phnx.im".to_owned(),
                     role: RoleIndex::Regular,
                 }],
             )
             .unwrap();
 
-        // @spam can send messages now
+        // @bob can send messages now
         room_state
             .make_actions(
-                "@spam:phnx.im",
+                "@bob:phnx.im",
                 &[Action::SendMessage {
                     message_type: MessageType::Image,
                 }],
             )
             .unwrap();
 
-        // The owner can kick @spam, removing all the roles
+        // The owner can kick @bob, removing all the roles
         room_state
             .make_actions(
-                "@timo:phnx.im",
+                "@alice:phnx.im",
                 &[Action::Kick {
-                    target: "@spam:phnx.im".to_owned(),
+                    target: "@bob:phnx.im".to_owned(),
                 }],
             )
             .unwrap();
 
         // Only the owner is in the room
-        assert_eq!(room_state.joined_users(), vec!["@timo:phnx.im".to_owned()]);
+        assert_eq!(room_state.joined_users(), vec!["@alice:phnx.im".to_owned()]);
+    }
+
+    #[test]
+    fn edit_messages() {
+        let mut room_state = test_room();
+
+        // Editing own message is allowed
+        room_state
+            .make_actions(
+                "@regular:phnx.im",
+                &[Action::EditMessage {
+                    target: "@regular:phnx.im".to_owned(),
+                }],
+            )
+            .unwrap();
+
+        // Editing other users' messages is usually not allowed
+        assert_eq!(
+            room_state.make_actions(
+                "@regular:phnx.im",
+                &[Action::EditMessage {
+                    target: "@visitor:phnx.im".to_owned(),
+                }],
+            ),
+            Err(Error::NotCapable)
+        );
+
+        // Moderators can edit other users' messages
+        room_state
+            .make_actions(
+                "@mod:phnx.im",
+                &[Action::EditMessage {
+                    target: "@regular:phnx.im".to_owned(),
+                }],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn leave_room() {
+        let mut room_state = test_room();
+
+        room_state
+            .make_actions(
+                "@alice:phnx.im",
+                &[Action::Kick {
+                    target: "@alice:phnx.im".to_owned(),
+                }],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn user_not_in_room() {
+        let mut room_state = test_room();
+
+        assert_eq!(
+            room_state.make_actions(
+                "@alice:phnx.im",
+                &[Action::Kick {
+                    target: "@notfound".to_owned(),
+                }],
+            ),
+            Err(Error::UserNotInRoom)
+        );
     }
 }
