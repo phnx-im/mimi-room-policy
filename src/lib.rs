@@ -2,23 +2,35 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! # Mimi Room Policy
+
 use std::collections::{HashMap, HashSet};
 
+/// An error returned from room policy operations.
 #[derive(Debug)]
 pub enum Error {
-    RoleNotFound,
+    /// The operation would have no effect.
     NothingToDo,
+
+    /// The target role is not part of the room policy.
     RoleNotDefined,
+
+    /// The user is not in the room.
     UserNotInRoom,
+
+    /// A user would have a role, but not the dependency roles.
     RoleDependencyViolated,
+
+    /// Too few or too many users would have a role.
     RoleMinMaxViolated,
-    ProtectionViolated,
+
+    /// The user does not have the required capability or the target is protected from the user.
     NotCapable,
 }
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// The specified roles have a special features in the room policy
+/// The specified roles have a special features in the room policy.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum RoleIndex {
@@ -47,41 +59,89 @@ pub enum RoleIndex {
     Custom(u16),
 }
 
+/// Capabilities grant permission to do certain actions and are always positive.
+///
+/// The following set of actions are not capabilities, because they can be used any member:
+/// - ReadMessage: Read messages sent by any user in the room
+/// - DropRoleSelf: The user removes a role from themselves, taking away some capabilities.
+/// - Leave: Leave the room
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
     // TYPE 1: Enforced by hub
-
-    // Timeout { max_duration: u32 },
+    /// Join the room.
     Join,
-    Knock,
-    Kick,                         // Removes all their roles
-    GiveRole { role: RoleIndex }, // E.g. Admins can add moderators
-    DropRole { role: RoleIndex }, // E.g. Admins can remove moderators
 
-    GiveRoleSelf { role: RoleIndex }, // E.g. Alice assigns the role Artist to herself
-    // DropRoleSelf is always allowed
+    /// Ask to be invited into the room.
+    Knock,
+
+    /// Force a user to leave the room. They are allowed to rejoin.
+    /// This effectively removes all roles from the user.
+    Kick,
+
+    /// Adding a role to a user, granting them some capabilities.
+    /// E.g. Admins can add moderators.
+    GiveRoleOther { role: RoleIndex },
+
+    /// Removing a role from a user, taking away some capabilities.
+    /// E.g. Admins can remove moderators.
+    DropRoleOther { role: RoleIndex },
+
+    /// A user adds a role to themselves, granting them some capabilities.
+    /// E.g. Alice assigns the "Artist" role to herself.
+    GiveRoleSelf { role: RoleIndex },
+
+    /// A user does not have to respect the ratelimit defined in the room policy.
+    IgnoreRatelimit,
 
     // TYPE 2: Enforced by clients, the hubs helps if it can
+    /// Send a message of a specific type into the room.
     SendMessage { message_type: MessageType },
-    EditMessage,
-    EditMessageSelf,
-    DeleteMessage,
-    DeleteMessageSelf,
 
-    IgnoreRatelimit,
+    /// Edit messages sent by others.
+    /// E.g. Removing sensitive details from a message.
+    EditMessageOther,
+
+    /// Edit message sent by yourself.
+    /// E.g. Clarifying a question or correcting typos.
+    EditMessageSelf,
+
+    /// Delete messages sent by others.
+    /// E.g. Removing spam.
+    DeleteMessageOther,
+
+    /// Deleting messages sent by yourself.
+    /// E.g. After accidentally sending a message into a wrong chat.
+    DeleteMessageSelf,
 }
 
+/// Different types of messages.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MessageType {
+    /// A text message.
     Text,
+
+    /// An image.
     Image,
-    Voice,
+
+    /// A regular audio message
     Audio,
+
+    /// A voice audio message.
+    Voice,
+
+    /// A video.
     Video,
+
+    /// An arbitrary file.
     File,
-    ControlCall,
+
+    /// Message that start or end a conference
+    ControlConference,
 }
 
+/// An action that makes use of capabilities.
+///
+/// There is a lot of similarity to `Capability`, but this is a separate enum because some actions require more information.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     /// Give set of default roles.
@@ -108,8 +168,9 @@ pub enum Action {
     DeleteMessage { target: String },
 }
 
+/// The definition of a role for the room policy.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Role {
+pub struct RoleInfo {
     role_name: String,
     role_description: String,
     role_capabilities: Vec<Capability>, // TODO: This could also be a bitvector
@@ -129,9 +190,10 @@ pub struct Role {
 //     preauth_user: String,      // Uri
 // }
 
+/// The set of rules that the room will follow.
 #[derive(Clone)]
 pub struct RoomPolicy {
-    roles: HashMap<RoleIndex, Role>,
+    roles: HashMap<RoleIndex, RoleInfo>,
     default_roles: HashSet<RoleIndex>,
     parent_room: Option<String>,
     password_protected: Option<String>,
@@ -143,10 +205,16 @@ pub struct RoomPolicy {
     // thread_rate_limit_ms: u32,
 }
 
+/// A value to indicate preference of a feature.
 #[derive(Clone)]
 pub enum Optionality {
+    /// The decision is up to the user or client.
     Optional = 0,
+
+    /// The feature must be active.
     Required = 1,
+
+    /// The feature must be disabled.
     Forbidden = 2,
 }
 
@@ -157,37 +225,47 @@ pub enum Optionality {
 //     ParentDependent, // ??
 // }
 
+/// The state of the room.
 #[derive(Clone)]
 pub struct RoomState {
+    /// The general rules for the room.
     policy: RoomPolicy,
+
+    /// The current roles for each user.
+    /// Users in this map are all part of the room and allowed to read messages.
+    /// A user with no roles is automatically removed from.
     user_roles: HashMap<String, HashSet<RoleIndex>>,
 }
 
+/// A list of presets for common room policies.
 pub enum PolicyTemplate {
-    /// Visitors cannot chat
+    /// Visitors cannot chat.
     Announcement,
 
-    /// All members can chat
+    /// All members can chat.
     Public,
 
-    /// Private room, members can send invites
+    /// Private room, members can send invites.
     InviteOnly,
 
-    // Private room, but anyone can knock
+    /// Private room, but anyone can knock.
     Knock,
 
-    /// Private room, only admins can invite
+    /// Private room, only admins can invite.
     FixedMembership,
+
+    /// User can join if they are part of the parent room.
     ParentDependent,
 }
 
 impl RoomState {
+    /// Construct a new room using the specified template.
     pub fn new_from_template(owner: &str, template: PolicyTemplate) -> Self {
         let mut roles = HashMap::new();
 
         roles.insert(
             RoleIndex::Outsider,
-            Role {
+            RoleInfo {
                 role_name: "Outsider".to_owned(),
                 role_description: "Not in the room".to_owned(),
                 role_capabilities: match template {
@@ -204,10 +282,10 @@ impl RoomState {
         roles.insert(
             RoleIndex::Visitor,
             match template {
-                PolicyTemplate::Announcement => Role {
+                PolicyTemplate::Announcement => RoleInfo {
                     role_name: "Visitor".to_owned(),
                     role_description: "Can only read".to_owned(),
-                    role_capabilities: vec![Capability::GiveRole {
+                    role_capabilities: vec![Capability::GiveRoleOther {
                         role: RoleIndex::Visitor, // Invite users
                     }],
                     dependencies: vec![],
@@ -215,7 +293,7 @@ impl RoomState {
                     max: None,
                 },
 
-                PolicyTemplate::Public => Role {
+                PolicyTemplate::Public => RoleInfo {
                     role_name: "Visitor".to_owned(),
                     role_description:
                         "Can read, and send text messages and images, but rate-limited".to_owned(),
@@ -228,7 +306,7 @@ impl RoomState {
                         },
                         Capability::EditMessageSelf,
                         Capability::DeleteMessageSelf,
-                        Capability::GiveRole {
+                        Capability::GiveRoleOther {
                             role: RoleIndex::Visitor, // Invite users
                         },
                     ],
@@ -237,7 +315,7 @@ impl RoomState {
                     max: None,
                 },
 
-                PolicyTemplate::InviteOnly | PolicyTemplate::Knock | PolicyTemplate::FixedMembership => Role {
+                PolicyTemplate::InviteOnly | PolicyTemplate::Knock | PolicyTemplate::FixedMembership => RoleInfo {
                     role_name: "Visitor".to_owned(),
                     role_description:
                         "User was invited and can read messages, but cannot send until accepting the invite".to_owned(),
@@ -258,7 +336,7 @@ impl RoomState {
 
         roles.insert(
             RoleIndex::Regular,
-            Role {
+            RoleInfo {
                 role_name: "Regular user".to_owned(),
                 role_description: "Can read and send messages without rate-limit".to_owned(),
                 role_capabilities: vec![
@@ -275,7 +353,13 @@ impl RoomState {
                     Capability::SendMessage {
                         message_type: MessageType::Audio,
                     },
-                    // No videos, files or calls are allowed
+                    Capability::SendMessage {
+                        message_type: MessageType::Video,
+                    },
+                    Capability::SendMessage {
+                        message_type: MessageType::File,
+                    },
+                    // No conference control messages are allowed
 
                     // No rate-limit for approved users
                     Capability::IgnoreRatelimit,
@@ -288,17 +372,21 @@ impl RoomState {
 
         roles.insert(
             RoleIndex::Moderator,
-            Role {
+            RoleInfo {
                 role_name: "Moderator".to_owned(),
                 role_description:
                     "Can edit or remove messages sent by others. Can promote more moderators"
                         .to_owned(),
                 role_capabilities: vec![
+                    // Control a conference
+                    Capability::SendMessage {
+                        message_type: MessageType::ControlConference,
+                    },
                     // Moderate
-                    Capability::EditMessage,
-                    Capability::DeleteMessage,
+                    Capability::EditMessageOther,
+                    Capability::DeleteMessageOther,
                     // Add more moderators
-                    Capability::GiveRole {
+                    Capability::GiveRoleOther {
                         role: RoleIndex::Moderator,
                     },
                 ],
@@ -310,7 +398,7 @@ impl RoomState {
 
         roles.insert(
             RoleIndex::Admin,
-            Role {
+            RoleInfo {
                 role_name: "Admin".to_owned(),
                 role_description: "Has all capabilities".to_owned(),
                 role_capabilities: vec![
@@ -324,7 +412,7 @@ impl RoomState {
 
         roles.insert(
             RoleIndex::Owner,
-            Role {
+            RoleInfo {
                 role_name: "Owner".to_owned(),
                 role_description: "Is protected from admins".to_owned(),
                 role_capabilities: vec![
@@ -352,10 +440,11 @@ impl RoomState {
             //thread_rate_limit_ms: 100, // almost no delay in threads
         };
 
-        RoomState::new(&policy, owner)
+        RoomState::new(owner, &policy)
     }
 
-    pub fn new(policy: &RoomPolicy, owner: &str) -> Self {
+    /// Construct a new room with the given policy.
+    pub fn new(owner: &str, policy: &RoomPolicy) -> Self {
         let mut user_roles = HashMap::new();
 
         let mut owner_roles = HashSet::new();
@@ -378,6 +467,7 @@ impl RoomState {
         this
     }
 
+    /// Returns true if the user has the Moderator role.
     pub fn is_mod(&self, user_id: &str) -> Result<bool> {
         Ok(self
             .user_roles
@@ -386,6 +476,7 @@ impl RoomState {
             .contains(&RoleIndex::Moderator))
     }
 
+    /// Returns true if the user has the Admin role.
     pub fn is_admin(&self, user_id: &str) -> Result<bool> {
         Ok(self
             .user_roles
@@ -394,6 +485,7 @@ impl RoomState {
             .contains(&RoleIndex::Admin))
     }
 
+    /// Returns true if the user has the Owner role.
     pub fn is_owner(&self, user_id: &str) -> Result<bool> {
         Ok(self
             .user_roles
@@ -402,13 +494,23 @@ impl RoomState {
             .contains(&RoleIndex::Owner))
     }
 
+    /// Returns true if the target is protected from the actor:
+    /// - Owners are protected from everyone.
+    /// - Admins are protected from other admins.
+    /// - Moderators are protected from other moderators.
+    ///
+    /// Because all admins are also moderators, admins are protected from moderators.
     pub fn is_protected_from(&self, actor: &str, target: &str) -> Result<bool> {
         Ok(self.is_owner(target)?
             || self.is_admin(target)? && !self.is_admin(actor)?
             || self.is_mod(target)? && !self.is_mod(actor)?)
     }
 
-    pub fn user_capabilities(&self, user_id: &str) -> HashSet<Capability> {
+    /// The list of all capabilities of a user as determined by their roles.
+    ///
+    /// - Admins implicitly have all capabilities, even those not listed by this function.
+    /// - If a user has no roles, they receive the capabilities of the Outsider role.
+    pub fn user_explicit_capabilities(&self, user_id: &str) -> Result<HashSet<Capability>> {
         let mut roles = HashSet::new();
 
         if let Some(assigned_roles) = self.user_roles.get(user_id) {
@@ -420,19 +522,23 @@ impl RoomState {
         let mut capabilities = HashSet::new();
 
         for role in roles {
-            let role_info = self.policy.roles.get(&role).ok_or(()).unwrap();
+            let role_info = self.policy.roles.get(&role).ok_or(Error::RoleNotDefined)?;
 
             capabilities.extend(role_info.role_capabilities.iter())
         }
 
-        capabilities
+        Ok(capabilities)
     }
 
+    /// Returns true if the user has this capability explicitly or if they are an administrator.
     pub fn is_capable(&self, user_id: &str, capability: Capability) -> Result<bool> {
-        Ok(self.is_admin(user_id)? || self.user_capabilities(user_id).contains(&capability))
+        Ok(self.is_admin(user_id)?
+            || self
+                .user_explicit_capabilities(user_id)?
+                .contains(&capability))
     }
 
-    /// Returns the sorted list of all users
+    /// Returns the sorted list of all users.
     pub fn joined_users(&self) -> Vec<String> {
         let mut list = self.user_roles.keys().cloned().collect::<Vec<_>>();
 
@@ -441,6 +547,7 @@ impl RoomState {
         list
     }
 
+    /// Adds a role to a user.
     fn give_user_role(&mut self, user_id: &str, role: RoleIndex) -> Result<()> {
         if self
             .user_roles
@@ -450,10 +557,11 @@ impl RoomState {
         {
             Ok(())
         } else {
-            Err(Error::RoleNotDefined)
+            Err(Error::NothingToDo)
         }
     }
 
+    /// Removes a role from a user.
     fn drop_user_role(&mut self, user_id: &str, role: RoleIndex) -> Result<()> {
         if self
             .user_roles
@@ -473,7 +581,7 @@ impl RoomState {
         for roles_of_user in self.user_roles.values() {
             for role in roles_of_user {
                 *role_counts.entry(role).or_insert(0_u32) += 1;
-                let role_info = self.policy.roles.get(role).ok_or(Error::UserNotInRoom)?;
+                let role_info = self.policy.roles.get(role).ok_or(Error::RoleNotDefined)?;
                 for dependency in &role_info.dependencies {
                     if !roles_of_user.contains(dependency) {
                         return Err(Error::RoleDependencyViolated);
@@ -483,11 +591,7 @@ impl RoomState {
         }
 
         for (role, count) in role_counts {
-            let role_info = self
-                .policy
-                .roles
-                .get(role)
-                .expect("all user roles are defined in the policy");
+            let role_info = self.policy.roles.get(role).ok_or(Error::RoleNotDefined)?;
 
             if count < role_info.min || role_info.max.is_some_and(|max| count > max) {
                 return Err(Error::RoleMinMaxViolated);
@@ -500,6 +604,9 @@ impl RoomState {
         Ok(())
     }
 
+    /// Applies the list of actions in the given order.
+    ///
+    /// After all actions are done, consistency checks will validate the room state.
     pub fn make_actions(&mut self, user_id: &str, actions: &[Action]) -> Result<()> {
         let mut new_state = self.clone();
 
@@ -536,7 +643,7 @@ impl RoomState {
                             .is_capable(user_id, Capability::GiveRoleSelf { role: *role })?;
 
                     let valid_to_other =
-                        new_state.is_capable(user_id, Capability::GiveRole { role: *role })?;
+                        new_state.is_capable(user_id, Capability::GiveRoleOther { role: *role })?;
                     // TODO: Do we want protection here? && !new_state.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
@@ -549,7 +656,7 @@ impl RoomState {
                     let valid_to_self = target == user_id;
 
                     let valid_to_other = new_state
-                        .is_capable(user_id, Capability::DropRole { role: *role })?
+                        .is_capable(user_id, Capability::DropRoleOther { role: *role })?
                         && !new_state.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
@@ -577,7 +684,8 @@ impl RoomState {
                     let valid_to_self = target == user_id
                         && new_state.is_capable(user_id, Capability::EditMessageSelf)?;
 
-                    let valid_to_other = new_state.is_capable(user_id, Capability::EditMessage)?
+                    let valid_to_other = new_state
+                        .is_capable(user_id, Capability::EditMessageOther)?
                         && !new_state.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
@@ -594,7 +702,7 @@ impl RoomState {
                         && new_state.is_capable(user_id, Capability::DeleteMessageSelf)?;
 
                     let valid_to_other = new_state
-                        .is_capable(user_id, Capability::DeleteMessage)?
+                        .is_capable(user_id, Capability::DeleteMessageOther)?
                         && !new_state.is_protected_from(user_id, target)?;
 
                     if !valid_to_self && !valid_to_other {
