@@ -3,6 +3,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! # Mimi Room Policy
+//!
+//! This proposal is for role-based access control mode with a set of predefined rules and the option to extend it with custom roles.
+//!
+//!
+//! ## Basics
+//!
+//! The most important roles are predefined and have special behavior to make it easy for clients to understand them. These roles have a hierarchy that corresponds to the level of trust in users.
+//! 1. **Outsiders** are not in the room and not trusted at all.
+//! 2. **Visitors** have a low level of trust and may not even be able to send messages.
+//! 3. **Regular users** have a standard level of trust and can interact normally with the room.
+//! 4. **Moderators** are trusted to manage the discussion in the room.
+//! 5. **Admins** have a very high level of trust and can change almost any aspect of the room.
+//! 6. The **Owner** is the single member with more power than admins.
+//!
+//! A custom role can be used for sets of users that do not fit in the above hierarchy. For example, consider a room dedicated to game development:
+//! - A custom role **Programmer** allows programmers to send messages into the "#programming" thread.
+//! - A custom role **Bot** is added to all bot users to indicate that their responses are automated.
+//! - Users can give a custom role **He/Him**, **She/Her** or **They/Them** to themselves to specify their preference.
+//!
+//! For the default room variants, see [`PolicyTemplate`].
+//!
 
 use std::{
     collections::{HashMap, HashSet},
@@ -307,22 +328,44 @@ pub struct RoomState {
 
 /// A list of presets for common room policies.
 pub enum PolicyTemplate {
-    /// Visitors cannot chat.
+    /// A room where visitors cannot chat.
+    ///
+    /// - **Outsiders** can join as Visitors
+    /// - **Visitors** can invite more users, but cannot chat
+    /// - **Regular users** can chat without a rate limit
     Announcement,
 
-    /// All members can chat.
+    /// A room where all members can chat.
+    ///
+    /// - **Outsiders** can join as Visitors
+    /// - **Visitors** can invite more users and send text and image messages
+    /// - **Regular users** can chat without a rate limit
     Public,
 
-    /// Private room, members can send invites.
+    /// A private room where members can send invites.
+    ///
+    /// - **Outsiders** cannot join
+    /// - **Visitors** represent "invited users" and can read messages and change to Regular users
+    /// - **Regular users** can chat without a rate limit and invite more users
     InviteOnly,
 
-    /// Private room, but anyone can knock.
+    /// A private room where anyone can knock.
+    ///
+    /// - **Outsiders** can knock
+    /// - **Visitors** represent "invited users" and can read messages and change to Regular users
+    /// - **Regular users** can chat without a rate limit and invite more users
     Knock,
 
-    /// Private room, only admins can invite.
+    /// A private room where only admins can invite.
+    ///
+    /// - **Outsiders** cannot join
+    /// - **Visitors** represent "invited users" and can read messages and change to Regular users
+    /// - **Regular users** can chat without a rate limit, but cannot invite more users
     FixedMembership,
 
-    /// User can join if they are part of the parent room.
+    /// A room where user can join if they are part of the parent room.
+    ///
+    /// TODO
     ParentDependent,
 }
 
@@ -409,7 +452,7 @@ impl RoomState {
             RoleIndex::Regular,
             RoleInfo {
                 role_name: "Regular user".to_owned(),
-                role_description: "Can read and send messages without rate-limit".to_owned(),
+                role_description: "Can read and send messages without a rate limit".to_owned(),
                 role_capabilities: vec![
                     // Send messages
                     Capability::SendMessage {
@@ -432,7 +475,7 @@ impl RoomState {
                     },
                     // No conference control messages are allowed
 
-                    // No rate-limit for approved users
+                    // No rate limit for approved users
                     Capability::IgnoreRatelimit,
                 ],
                 dependencies: vec![RoleIndex::Visitor],
@@ -719,7 +762,9 @@ impl RoomState {
                 && (!role_info.role_name.is_empty() || !role_info.role_description.is_empty())
             {
                 // Special roles always have empty names, because clients should display their own translated names.
-                return Err(Error::SpecialRole);
+                //
+                // TODO: Or maybe not?
+                // return Err(Error::SpecialRole);
             }
 
             if role_info.role_name.len() > 1000 {
