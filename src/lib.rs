@@ -29,12 +29,30 @@ pub enum Error {
 
     /// The user does not have the required capability or the target is protected from the user.
     NotCapable,
+
+    /// Could not create a new role, because a role with this RoleIndex already exists.
+    RoleAlreadyExists,
+
+    /// The action could not be taken, because of special rules for the relevant capability.
+    SpecialCapability,
+
+    /// The action could not be taken, because of special rules for the relevant role.
+    SpecialRole,
+
+    /// A string value could not be set, because it is too long.
+    StringTooLong,
+
+    /// The dependencies could not be changed.
+    InvalidRoleDependencies,
+
+    /// A role could not be removed, because there are still users with this role.
+    RoleInUse,
 }
 
 type Result<T> = std::result::Result<T, Error>;
 
 /// The specified roles have a special features in the room policy.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum RoleIndex {
     /// Automatically given to users not in the room.
@@ -62,13 +80,20 @@ pub enum RoleIndex {
     Custom(u16),
 }
 
+impl RoleIndex {
+    // Returns true if the role is RoleIndex::Custom(_).
+    pub fn is_custom(&self) -> bool {
+        matches!(self, RoleIndex::Custom(_))
+    }
+}
+
 /// Capabilities grant permission to do certain actions and are always positive.
 ///
 /// The following set of actions are not capabilities, because they can be used any member:
 /// - ReadMessage: Read messages sent by any user in the room
 /// - DropRoleSelf: The user removes a role from themselves, taking away some capabilities.
 /// - Leave: Leave the room
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Capability {
     // TYPE 1: Enforced by hub
     /// Join the room.
@@ -118,7 +143,7 @@ pub enum Capability {
 }
 
 /// Different types of messages.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MessageType {
     /// A text message.
     Text,
@@ -164,11 +189,51 @@ pub enum Action {
     /// Send messages in the room.
     SendMessage { message_type: MessageType },
 
-    /// Edit messages from yourself or others
+    /// Edit messages from yourself or others.
     EditMessage { target: String },
 
-    /// Delete messages from yourself or others
+    /// Delete messages from yourself or others.
     DeleteMessage { target: String },
+
+    // Add, change or remove roles. There is no corresponding capability, only admins can do this.
+    ChangePolicy {
+        target: RoleIndex,
+        action: RoleChange,
+    },
+}
+
+/// A policy change to a role.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum RoleChange {
+    /// Create a new custom role.
+    New(RoleInfo),
+
+    /// Remove a custom role.
+    Remove,
+
+    /// Change the name of a custom role.
+    ChangeName(String),
+
+    /// Change the description of a custom role.
+    ChangeDescription(String),
+
+    /// Add a capability to a role.
+    AddCapability(Capability),
+
+    /// Remove a capability from a role.
+    RemoveCapability(Capability),
+
+    /// Add a dependency to a role.
+    AddDependency(RoleIndex),
+
+    /// Remove a dependency from a role.
+    RemoveDependency(RoleIndex),
+
+    /// Set minimum number of members with this role.
+    SetMin(u32),
+
+    // Set maximum number of members with this role.
+    SetMax(Option<u32>),
 }
 
 /// The definition of a role for the room policy.
@@ -582,6 +647,14 @@ impl RoomState {
     }
 
     fn consistency_checks(mut self) -> Result<VerifiedRoomState> {
+        // These roles are always defined
+        assert!(self.policy.roles.contains_key(&RoleIndex::Outsider));
+        assert!(self.policy.roles.contains_key(&RoleIndex::Visitor));
+        assert!(self.policy.roles.contains_key(&RoleIndex::Regular));
+        assert!(self.policy.roles.contains_key(&RoleIndex::Moderator));
+        assert!(self.policy.roles.contains_key(&RoleIndex::Admin));
+        assert!(self.policy.roles.contains_key(&RoleIndex::Owner));
+
         let mut role_counts = HashMap::new();
         // Role dependencies
         for roles_of_user in self.user_roles.values() {
@@ -589,6 +662,8 @@ impl RoomState {
                 *role_counts.entry(role).or_insert(0_u32) += 1;
                 let role_info = self.policy.roles.get(role).ok_or(Error::RoleNotDefined)?;
                 for dependency in &role_info.dependencies {
+                    let _dependency_info =
+                        self.policy.roles.get(role).ok_or(Error::RoleNotDefined)?;
                     if !roles_of_user.contains(dependency) {
                         return Err(Error::RoleDependencyViolated);
                     }
@@ -596,9 +671,72 @@ impl RoomState {
             }
         }
 
-        for (role, count) in role_counts {
-            let role_info = self.policy.roles.get(role).ok_or(Error::RoleNotDefined)?;
+        for (role, role_info) in &mut self.policy.roles {
+            role_info.role_capabilities.sort();
+            role_info.role_capabilities.dedup();
 
+            role_info.dependencies.sort();
+            role_info.dependencies.dedup();
+
+            // Some capabilities are only allowed in specific circumstances
+            for capability in &role_info.role_capabilities {
+                // Only outsiders can knock
+                if *capability == Capability::Knock && *role != RoleIndex::Outsider {
+                    return Err(Error::SpecialCapability);
+                }
+
+                // Outsiders can only knock
+                if *capability != Capability::Knock && *role == RoleIndex::Outsider {
+                    return Err(Error::SpecialRole);
+                }
+
+                // Admins and Owner can already do everything, they don't need explicit capabilities
+                if *role == RoleIndex::Admin || *role == RoleIndex::Owner {
+                    return Err(Error::SpecialRole);
+                }
+            }
+
+            // Only custom roles can have arbitrary dependencies
+            let dependencies_valid = match role {
+                RoleIndex::Outsider => role_info.dependencies == vec![],
+                RoleIndex::Visitor => role_info.dependencies == vec![],
+                RoleIndex::Regular => role_info.dependencies == vec![RoleIndex::Visitor],
+                RoleIndex::Moderator => role_info.dependencies == vec![RoleIndex::Regular],
+                RoleIndex::Admin => role_info.dependencies == vec![RoleIndex::Moderator],
+                RoleIndex::Owner => role_info.dependencies == vec![RoleIndex::Admin],
+                RoleIndex::Custom(_) => {
+                    // No member has role Outsider and all members have role Visitor
+                    !role_info.dependencies.contains(&RoleIndex::Outsider)
+                        && !role_info.dependencies.contains(&RoleIndex::Visitor)
+                }
+            };
+
+            if !dependencies_valid {
+                return Err(Error::InvalidRoleDependencies);
+            }
+
+            if !role.is_custom()
+                && (!role_info.role_name.is_empty() || !role_info.role_description.is_empty())
+            {
+                // Special roles always have empty names, because clients should display their own translated names.
+                return Err(Error::SpecialRole);
+            }
+
+            if role_info.role_name.len() > 1000 {
+                return Err(Error::StringTooLong);
+            }
+
+            if role_info.role_description.len() > 1000 {
+                return Err(Error::StringTooLong);
+            }
+
+            if role_info.dependencies.contains(&role) {
+                return Err(Error::InvalidRoleDependencies);
+                // TODO: Detect transitive dependency loops
+            }
+
+            // Min and max
+            let count = *role_counts.get(&role).unwrap_or(&0);
             if count < role_info.min || role_info.max.is_some_and(|max| count > max) {
                 return Err(Error::RoleMinMaxViolated);
             }
@@ -710,6 +848,118 @@ impl RoomState {
 
                     if !valid_to_self && !valid_to_other {
                         return Err(Error::NotCapable);
+                    }
+                }
+                Action::ChangePolicy { target, action } => {
+                    if !self.is_admin(user_id)? {
+                        return Err(Error::NotCapable);
+                    }
+
+                    match action {
+                        RoleChange::New(role_info) => {
+                            if !target.is_custom() || self.policy.roles.contains_key(target) {
+                                return Err(Error::RoleAlreadyExists);
+                            }
+
+                            self.policy.roles.insert(*target, role_info.clone());
+                        }
+                        RoleChange::Remove => {
+                            for (_user, roles) in &self.user_roles {
+                                if roles.contains(target) {
+                                    return Err(Error::RoleInUse);
+                                }
+                            }
+
+                            self.policy.roles.remove(target);
+                        }
+                        RoleChange::ChangeName(new_name) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if role_info.role_name == *new_name {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.role_name = new_name.clone();
+                        }
+                        RoleChange::ChangeDescription(new_description) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if role_info.role_description == *new_description {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.role_description = new_description.clone();
+                        }
+                        RoleChange::AddCapability(capability) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if role_info.role_capabilities.contains(capability) {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.role_capabilities.push(capability.clone());
+                        }
+                        RoleChange::RemoveCapability(capability) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if !role_info.role_capabilities.contains(capability) {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.role_capabilities.retain(|x| x != capability);
+                        }
+                        RoleChange::AddDependency(dependency) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if role_info.dependencies.contains(dependency) {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.dependencies.push(*dependency);
+                        }
+                        RoleChange::RemoveDependency(dependency) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if !role_info.dependencies.contains(dependency) {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.dependencies.retain(|x| x != dependency);
+                        }
+                        RoleChange::SetMin(new_min) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if role_info.min == *new_min {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.min = *new_min;
+                        }
+                        RoleChange::SetMax(new_max) => {
+                            let Some(role_info) = self.policy.roles.get_mut(target) else {
+                                return Err(Error::RoleNotDefined);
+                            };
+
+                            if role_info.max == *new_max {
+                                return Err(Error::NothingToDo);
+                            }
+
+                            role_info.max = *new_max;
+                        }
                     }
                 }
             }
