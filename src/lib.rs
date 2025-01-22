@@ -11,7 +11,7 @@
 //!
 //! The most important roles are predefined and have special behavior to make it easy for clients to understand them. These roles have a hierarchy that corresponds to the level of trust in users.
 //! 1. **Outsiders** are not in the room and not trusted at all.
-//! 2. **Visitors** have a low level of trust and may not even be able to send messages.
+//! 2. **Visitors** are members of the room with the lowest amount of trust and have restricted capabilities.
 //! 3. **Regular users** have a standard level of trust and can interact normally with the room.
 //! 4. **Moderators** are trusted to manage the discussion in the room.
 //! 5. **Admins** have a very high level of trust and can change almost any aspect of the room.
@@ -73,28 +73,25 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// The specified roles have a special features in the room policy.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum RoleIndex {
-    /// Automatically given to users not in the room.
+    /// Outsiders are not in the room and are not trusted at all.
     Outsider = 0,
 
-    /// Meant for new members in public rooms or invited users in private rooms.
-    Visitor = 1,
+    /// Restricted users are members of the room with the lowest amount of trust and have limited capabilities.
+    Restricted = 1,
 
-    /// Meant for approved members or new members in private rooms.
+    /// Regular users have a standard level of trust and can interact normally with the room.
     Regular = 2,
 
-    /// Meant for members trusted enough to moderate other users.
-    /// They are protected from other moderators.
+    /// Moderators are trusted to manage the discussion in the room.
     Moderator = 3,
 
-    /// Meant for members trusted to configure the entire room.
-    /// They are protected from each moderators and other admins.
+    /// Admins have a very high level of trust and can change almost any aspect of the room.
     Admin = 4,
 
-    /// Assigned to the creator of the room and there can only be one.
-    /// They are protected from everyone.
+    /// The Owner is the single member with more power than admins.
     Owner = 5,
 
     /// Custom roles
@@ -114,12 +111,9 @@ impl RoleIndex {
 /// - ReadMessage: Read messages sent by any user in the room
 /// - DropRoleSelf: The user removes a role from themselves, taking away some capabilities.
 /// - Leave: Leave the room
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Capability {
     // TYPE 1: Enforced by hub
-    /// Join the room.
-    Join,
-
     /// Ask to be invited into the room.
     Knock,
 
@@ -164,8 +158,11 @@ pub enum Capability {
 }
 
 /// Different types of messages.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MessageType {
+    /// A reaction message.
+    Reaction,
+
     /// A text message.
     Text,
 
@@ -191,40 +188,58 @@ pub enum MessageType {
 /// An action that makes use of capabilities.
 ///
 /// There is a lot of similarity to `Capability`, but this is a separate enum because some actions require more information.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    /// Give set of default roles.
-    Join,
+    /// Ask to be invited into the room.
+    Knock,
 
     /// Drops all their roles. You can kick yourself to leave the room.
-    Kick { target: String },
+    Kick {
+        target: String,
+    },
 
     /// Add a role to a user.
     // E.g. Admins can add the moderator role to regular users.
-    GiveRole { target: String, role: RoleIndex },
+    GiveRole {
+        target: String,
+        role: RoleIndex,
+    },
 
     /// Remove a role from a user.
-    DropRole { target: String, role: RoleIndex },
+    DropRole {
+        target: String,
+        role: RoleIndex,
+    },
 
     // TYPE 2: Enforced by clients, the hubs helps if it can
     /// Send messages in the room.
-    SendMessage { message_type: MessageType },
+    SendMessage {
+        message_type: MessageType,
+    },
 
     /// Edit messages from yourself or others.
-    EditMessage { target: String },
+    EditMessage {
+        target: String,
+    },
 
     /// Delete messages from yourself or others.
-    DeleteMessage { target: String },
+    DeleteMessage {
+        target: String,
+    },
 
     // Add, change or remove roles. There is no corresponding capability, only admins can do this.
-    ChangePolicy {
+    ChangePolicyRole {
         target: RoleIndex,
         action: RoleChange,
+    },
+
+    ChangePolicyProperty {
+        todo: (),
     },
 }
 
 /// A policy change to a role.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RoleChange {
     /// Create a new custom role.
     New(RoleInfo),
@@ -258,7 +273,7 @@ pub enum RoleChange {
 }
 
 /// The definition of a role for the room policy.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RoleInfo {
     role_name: String,
     role_description: String,
@@ -283,7 +298,6 @@ pub struct RoleInfo {
 #[derive(Clone)]
 pub struct RoomPolicy {
     roles: HashMap<RoleIndex, RoleInfo>,
-    default_roles: HashSet<RoleIndex>,
     parent_room: Option<String>,
     password_protected: Option<String>,
     delivery_notifications: Optionality,
@@ -307,13 +321,6 @@ pub enum Optionality {
     Forbidden = 2,
 }
 
-// pub enum MembershipStyle {
-//     Open, // outsider has join permission
-//     InviteOnly, // outsider does not have join permission
-//     FixedMembership, // no one has the join or invite permission
-//     ParentDependent, // ??
-// }
-
 /// The state of the room.
 #[derive(Clone)]
 pub struct RoomState {
@@ -328,39 +335,35 @@ pub struct RoomState {
 
 /// A list of presets for common room policies.
 pub enum PolicyTemplate {
-    /// A room where visitors cannot chat.
+    /// A public room where visitors cannot chat.
     ///
-    /// - **Outsiders** can join as Visitors
-    /// - **Visitors** can invite more users, but cannot chat
-    /// - **Regular users** can chat without a rate limit
+    /// - **Outsiders** can join as Restricted users
+    /// - **Restricted users** can invite more users, but can only send reactions
+    /// - **Regular users** can chat normally
     Announcement,
 
-    /// A room where all members can chat.
+    /// A public room where all members can chat.
     ///
-    /// - **Outsiders** can join as Visitors
-    /// - **Visitors** can invite more users and send text and image messages
-    /// - **Regular users** can chat without a rate limit
+    /// - **Outsiders** can join as Regular users
+    /// - **Regular users** can chat normally
     Public,
 
     /// A private room where members can send invites.
     ///
     /// - **Outsiders** cannot join
-    /// - **Visitors** represent "invited users" and can read messages and change to Regular users
-    /// - **Regular users** can chat without a rate limit and invite more users
+    /// - **Regular users** can chat and invite users as Regular users
     InviteOnly,
 
     /// A private room where anyone can knock.
     ///
     /// - **Outsiders** can knock
-    /// - **Visitors** represent "invited users" and can read messages and change to Regular users
-    /// - **Regular users** can chat without a rate limit and invite more users
+    /// - **Regular users** can chat and invite users as Regular users
     Knock,
 
     /// A private room where only admins can invite.
     ///
     /// - **Outsiders** cannot join
-    /// - **Visitors** represent "invited users" and can read messages and change to Regular users
-    /// - **Regular users** can chat without a rate limit, but cannot invite more users
+    /// - **Regular users** can chat, but cannot invite more users
     FixedMembership,
 
     /// A room where user can join if they are part of the parent room.
@@ -383,7 +386,11 @@ impl RoomState {
                 role_name: "Outsider".to_owned(),
                 role_description: "Not in the room".to_owned(),
                 role_capabilities: match template {
-                    PolicyTemplate::Announcement | PolicyTemplate::Public => vec![Capability::Join],
+                    PolicyTemplate::Announcement | PolicyTemplate::Public => {
+                        vec![Capability::GiveRoleSelf {
+                            role: RoleIndex::Restricted,
+                        }]
+                    }
                     PolicyTemplate::Knock => vec![Capability::Knock],
                     _ => vec![],
                 },
@@ -394,34 +401,19 @@ impl RoomState {
         );
 
         roles.insert(
-            RoleIndex::Visitor,
+            RoleIndex::Restricted,
             match template {
                 PolicyTemplate::Announcement => RoleInfo {
                     role_name: "Visitor".to_owned(),
-                    role_description: "Can only read".to_owned(),
-                    role_capabilities: vec![Capability::GiveRoleOther {
-                        role: RoleIndex::Visitor, // Invite users
-                    }],
-                    dependencies: vec![],
-                    min: 0,
-                    max: None,
-                },
-
-                PolicyTemplate::Public => RoleInfo {
-                    role_name: "Visitor".to_owned(),
-                    role_description:
-                        "Can read, and send text messages and images, but rate-limited".to_owned(),
+                    role_description: "Can only send reactions".to_owned(),
                     role_capabilities: vec![
-                        Capability::SendMessage {
-                            message_type: MessageType::Text,
-                        },
-                        Capability::SendMessage {
-                            message_type: MessageType::Image,
-                        },
                         Capability::EditMessageSelf,
                         Capability::DeleteMessageSelf,
+                        Capability::SendMessage {
+                            message_type: MessageType::Reaction,
+                        },
                         Capability::GiveRoleOther {
-                            role: RoleIndex::Visitor, // Invite users
+                            role: RoleIndex::Restricted, // Invite users
                         },
                     ],
                     dependencies: vec![],
@@ -429,15 +421,15 @@ impl RoomState {
                     max: None,
                 },
 
-                PolicyTemplate::InviteOnly | PolicyTemplate::Knock | PolicyTemplate::FixedMembership => RoleInfo {
-                    role_name: "Visitor".to_owned(),
-                    role_description:
-                        "User was invited and can read messages, but cannot send until accepting the invite".to_owned(),
+                PolicyTemplate::Public
+                | PolicyTemplate::InviteOnly
+                | PolicyTemplate::Knock
+                | PolicyTemplate::FixedMembership => RoleInfo {
+                    role_name: "Restricted".to_owned(),
+                    role_description: "Can only read".to_owned(),
                     role_capabilities: vec![
-                        // Accept the invite
-                        Capability::GiveRoleSelf {
-                            role: RoleIndex::Regular,
-                        },
+                        Capability::EditMessageSelf,
+                        Capability::DeleteMessageSelf,
                     ],
                     dependencies: vec![],
                     min: 0,
@@ -452,7 +444,7 @@ impl RoomState {
             RoleIndex::Regular,
             RoleInfo {
                 role_name: "Regular user".to_owned(),
-                role_description: "Can read and send messages without a rate limit".to_owned(),
+                role_description: "Can read and send messages normally".to_owned(),
                 role_capabilities: vec![
                     // Send messages
                     Capability::SendMessage {
@@ -478,7 +470,7 @@ impl RoomState {
                     // No rate limit for approved users
                     Capability::IgnoreRatelimit,
                 ],
-                dependencies: vec![RoleIndex::Visitor],
+                dependencies: vec![RoleIndex::Restricted],
                 min: 0,
                 max: None,
             },
@@ -538,12 +530,8 @@ impl RoomState {
             },
         );
 
-        let mut default_roles = HashSet::new();
-        default_roles.insert(RoleIndex::Visitor);
-
         let policy = RoomPolicy {
             roles,
-            default_roles,
             parent_room: None,
             password_protected: None,
             delivery_notifications: Optionality::Optional,
@@ -563,7 +551,7 @@ impl RoomState {
 
         let mut owner_roles = HashSet::new();
 
-        owner_roles.insert(RoleIndex::Visitor);
+        owner_roles.insert(RoleIndex::Restricted);
         owner_roles.insert(RoleIndex::Regular);
         owner_roles.insert(RoleIndex::Moderator);
         owner_roles.insert(RoleIndex::Admin);
@@ -692,7 +680,7 @@ impl RoomState {
     fn consistency_checks(mut self) -> Result<VerifiedRoomState> {
         // These roles are always defined
         assert!(self.policy.roles.contains_key(&RoleIndex::Outsider));
-        assert!(self.policy.roles.contains_key(&RoleIndex::Visitor));
+        assert!(self.policy.roles.contains_key(&RoleIndex::Restricted));
         assert!(self.policy.roles.contains_key(&RoleIndex::Regular));
         assert!(self.policy.roles.contains_key(&RoleIndex::Moderator));
         assert!(self.policy.roles.contains_key(&RoleIndex::Admin));
@@ -723,13 +711,11 @@ impl RoomState {
 
             // Some capabilities are only allowed in specific circumstances
             for capability in &role_info.role_capabilities {
-                // Only outsiders can knock
-                if *capability == Capability::Knock && *role != RoleIndex::Outsider {
-                    return Err(Error::SpecialCapability);
-                }
-
-                // Outsiders can only knock
-                if *capability != Capability::Knock && *role == RoleIndex::Outsider {
+                // Outsiders can only knock or join
+                if (*capability != Capability::Knock
+                    && !matches!(capability, Capability::GiveRoleSelf { .. }))
+                    && *role == RoleIndex::Outsider
+                {
                     return Err(Error::SpecialRole);
                 }
 
@@ -742,15 +728,15 @@ impl RoomState {
             // Only custom roles can have arbitrary dependencies
             let dependencies_valid = match role {
                 RoleIndex::Outsider => role_info.dependencies == vec![],
-                RoleIndex::Visitor => role_info.dependencies == vec![],
-                RoleIndex::Regular => role_info.dependencies == vec![RoleIndex::Visitor],
+                RoleIndex::Restricted => role_info.dependencies == vec![],
+                RoleIndex::Regular => role_info.dependencies == vec![RoleIndex::Restricted],
                 RoleIndex::Moderator => role_info.dependencies == vec![RoleIndex::Regular],
                 RoleIndex::Admin => role_info.dependencies == vec![RoleIndex::Moderator],
                 RoleIndex::Owner => role_info.dependencies == vec![RoleIndex::Admin],
                 RoleIndex::Custom(_) => {
-                    // No member has role Outsider and all members have role Visitor
+                    // No member has role Outsider and all members have role Restricted
                     !role_info.dependencies.contains(&RoleIndex::Outsider)
-                        && !role_info.dependencies.contains(&RoleIndex::Visitor)
+                        && !role_info.dependencies.contains(&RoleIndex::Restricted)
                 }
             };
 
@@ -793,21 +779,38 @@ impl RoomState {
         Ok(VerifiedRoomState(self))
     }
 
+    pub fn join_room_actions(&self, user_id: &str) -> Result<Vec<Action>> {
+        let mut actions = Vec::new();
+
+        for capability in &self
+            .policy
+            .roles
+            .get(&RoleIndex::Outsider)
+            .ok_or(Error::RoleNotDefined)?
+            .role_capabilities
+        {
+            if let Capability::GiveRoleSelf { role } = capability {
+                actions.push(Action::GiveRole {
+                    target: user_id.to_owned(),
+                    role: *role,
+                });
+            }
+        }
+
+        if actions.is_empty() {
+            return Err(Error::NotCapable);
+        }
+
+        Ok(actions)
+    }
+
     /// Applies the list of actions in the given order. This will not verify consistency.
     pub fn try_make_actions(mut self, user_id: &str, actions: &[Action]) -> Result<Self> {
         assert!(!actions.is_empty());
 
         for action in actions {
             match action {
-                Action::Join => {
-                    if !self.is_capable(user_id, Capability::Join)? {
-                        return Err(Error::NotCapable);
-                    }
-
-                    for role in self.policy.default_roles.clone() {
-                        self.give_user_role(user_id, role)?;
-                    }
-                }
+                Action::Knock => todo!(),
                 Action::Kick { target } => {
                     if user_id != target && !self.is_capable(user_id, Capability::Kick)? {
                         return Err(Error::NotCapable);
@@ -895,7 +898,7 @@ impl RoomState {
                         return Err(Error::NotCapable);
                     }
                 }
-                Action::ChangePolicy { target, action } => {
+                Action::ChangePolicyRole { target, action } => {
                     if !self.is_admin(user_id)? {
                         return Err(Error::NotCapable);
                     }
@@ -1007,6 +1010,7 @@ impl RoomState {
                         }
                     }
                 }
+                Action::ChangePolicyProperty { todo } => todo!(),
             }
         }
 
@@ -1052,26 +1056,38 @@ mod tests {
 
     fn test_room() -> VerifiedRoomState {
         let mut room_state =
-            VerifiedRoomState::new_from_template("@alice:phnx.im", PolicyTemplate::Public);
+            VerifiedRoomState::new_from_template("@owner:phnx.im", PolicyTemplate::Public);
 
-        // @a, @b, @c @mod, @admin joins
+        // Users join
         room_state
-            .make_actions("@visitor:phnx.im", &[Action::Join])
+            .make_actions(
+                "@visitor:phnx.im",
+                &room_state.join_room_actions("@visitor:phnx.im").unwrap(),
+            )
             .unwrap();
         room_state
-            .make_actions("@regular:phnx.im", &[Action::Join])
+            .make_actions(
+                "@regular:phnx.im",
+                &room_state.join_room_actions("@regular:phnx.im").unwrap(),
+            )
             .unwrap();
         room_state
-            .make_actions("@mod:phnx.im", &[Action::Join])
+            .make_actions(
+                "@mod:phnx.im",
+                &room_state.join_room_actions("@mod:phnx.im").unwrap(),
+            )
             .unwrap();
         room_state
-            .make_actions("@admin:phnx.im", &[Action::Join])
+            .make_actions(
+                "@admin:phnx.im",
+                &room_state.join_room_actions("@admin:phnx.im").unwrap(),
+            )
             .unwrap();
 
         // Promote all users
         room_state
             .make_actions(
-                "@alice:phnx.im",
+                "@owner:phnx.im",
                 &[
                     // Regular
                     Action::GiveRole {
@@ -1109,15 +1125,15 @@ mod tests {
 
     #[test]
     fn invite_only_room() {
-        let mut room_state =
-            VerifiedRoomState::new_from_template("@alice:phnx.im", PolicyTemplate::InviteOnly);
+        let room_state =
+            VerifiedRoomState::new_from_template("@owner:phnx.im", PolicyTemplate::InviteOnly);
 
         // Only the owner is in the room
-        assert_eq!(room_state.joined_users(), vec!["@alice:phnx.im".to_owned()]);
+        assert_eq!(room_state.joined_users(), vec!["@owner:phnx.im".to_owned()]);
 
         // @bob cannot join
         assert_eq!(
-            room_state.make_actions("@bob:phnx.im", &[Action::Join]),
+            room_state.join_room_actions("@bob:phnx.im"),
             Err(Error::NotCapable)
         );
     }
@@ -1125,28 +1141,31 @@ mod tests {
     #[test]
     fn setup_public_room() {
         let mut room_state =
-            VerifiedRoomState::new_from_template("@alice:phnx.im", PolicyTemplate::Announcement);
+            VerifiedRoomState::new_from_template("@owner:phnx.im", PolicyTemplate::Announcement);
 
         // Only the owner is in the room
-        assert_eq!(room_state.joined_users(), vec!["@alice:phnx.im".to_owned()]);
+        assert_eq!(room_state.joined_users(), vec!["@owner:phnx.im".to_owned()]);
 
         // @bob joins
         room_state
-            .make_actions("@bob:phnx.im", &[Action::Join])
+            .make_actions(
+                "@bob:phnx.im",
+                &room_state.join_room_actions("@bob:phnx.im").unwrap(),
+            )
             .unwrap();
 
         // Now both are in the room
         assert_eq!(
             room_state.joined_users(),
-            vec!["@alice:phnx.im".to_owned(), "@bob:phnx.im".to_owned()]
+            vec!["@bob:phnx.im".to_owned(), "@owner:phnx.im".to_owned()]
         );
 
-        // @bob has the default role: Visitor
+        // @bob has the default role: Restricted
         assert!(room_state
             .user_roles
             .get("@bob:phnx.im")
             .unwrap()
-            .contains(&RoleIndex::Visitor));
+            .contains(&RoleIndex::Restricted));
 
         // Visitors can only read, not send
         assert_eq!(
@@ -1162,7 +1181,7 @@ mod tests {
         // The owner promotes @bob to a regular user
         room_state
             .make_actions(
-                "@alice:phnx.im",
+                "@owner:phnx.im",
                 &[Action::GiveRole {
                     target: "@bob:phnx.im".to_owned(),
                     role: RoleIndex::Regular,
@@ -1183,7 +1202,7 @@ mod tests {
         // The owner can kick @bob, removing all the roles
         room_state
             .make_actions(
-                "@alice:phnx.im",
+                "@owner:phnx.im",
                 &[Action::Kick {
                     target: "@bob:phnx.im".to_owned(),
                 }],
@@ -1191,7 +1210,7 @@ mod tests {
             .unwrap();
 
         // Only the owner is in the room
-        assert_eq!(room_state.joined_users(), vec!["@alice:phnx.im".to_owned()]);
+        assert_eq!(room_state.joined_users(), vec!["@owner:phnx.im".to_owned()]);
     }
 
     #[test]
@@ -1236,9 +1255,9 @@ mod tests {
 
         room_state
             .make_actions(
-                "@alice:phnx.im",
+                "@mod:phnx.im",
                 &[Action::Kick {
-                    target: "@alice:phnx.im".to_owned(),
+                    target: "@mod:phnx.im".to_owned(),
                 }],
             )
             .unwrap();
@@ -1250,7 +1269,7 @@ mod tests {
 
         assert_eq!(
             room_state.make_actions(
-                "@alice:phnx.im",
+                "@owner:phnx.im",
                 &[Action::Kick {
                     target: "@notfound".to_owned(),
                 }],
