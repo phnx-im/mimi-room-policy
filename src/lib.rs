@@ -26,7 +26,7 @@
 //!
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map, HashMap, HashSet},
     ops::Deref,
 };
 
@@ -68,6 +68,9 @@ pub enum Error {
 
     /// A role could not be removed, because there are still users with this role.
     RoleInUse,
+
+    /// The user was banned.
+    Banned,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -120,6 +123,9 @@ pub enum Capability {
     /// Force a user to leave the room. They are allowed to rejoin.
     /// This effectively removes all roles from the user.
     Kick,
+
+    /// Force a user to leave the room. They cannot rejoin.
+    Ban,
 
     /// Adding a role to a user, granting them some capabilities.
     /// E.g. Admins can add moderators.
@@ -196,6 +202,13 @@ pub enum Action {
     /// Drops all their roles. You can kick yourself to leave the room.
     Kick {
         target: String,
+    },
+
+    /// Drops all their roles and does not allow them to rejoin. You cannot ban yourself.
+    Ban {
+        target: String,
+        reason: String,
+        until: Option<u32>,
     },
 
     /// Add a role to a user.
@@ -331,6 +344,15 @@ pub struct RoomState {
     /// Users in this map are all part of the room and allowed to read messages.
     /// A user with no roles is automatically removed from.
     user_roles: HashMap<String, HashSet<RoleIndex>>,
+
+    users_banned: HashMap<String, BanInfo>,
+}
+
+#[derive(Clone)]
+struct BanInfo {
+    creator: String,
+    reason: String,
+    until: Option<u32>,
 }
 
 /// A list of presets for common room policies.
@@ -484,13 +506,19 @@ impl RoomState {
                     "Can edit or remove messages sent by others. Can promote more moderators"
                         .to_owned(),
                 role_capabilities: vec![
+                    // Moderate
+                    Capability::EditMessageOther,
+                    Capability::DeleteMessageOther,
+                    Capability::Kick,
+                    Capability::Ban,
                     // Control a conference
                     Capability::SendMessage {
                         message_type: MessageType::ControlConference,
                     },
-                    // Moderate
-                    Capability::EditMessageOther,
-                    Capability::DeleteMessageOther,
+                    // Approve members
+                    Capability::GiveRoleOther {
+                        role: RoleIndex::Regular,
+                    },
                     // Add more moderators
                     Capability::GiveRoleOther {
                         role: RoleIndex::Moderator,
@@ -561,6 +589,7 @@ impl RoomState {
 
         Self {
             policy: policy.clone(),
+            users_banned: HashMap::new(),
             user_roles,
         }
     }
@@ -776,6 +805,18 @@ impl RoomState {
         // Drop users that have no role
         self.user_roles.retain(|_user_id, roles| !roles.is_empty());
 
+        // Banned users are not in the room
+        for (user, ban) in &self.users_banned {
+            let banned = match ban.until {
+                None => true,
+                Some(_) => todo!(),
+            };
+
+            if banned && self.user_roles.contains_key(user) {
+                return Err(Error::Banned);
+            }
+        }
+
         Ok(VerifiedRoomState(self))
     }
 
@@ -808,6 +849,13 @@ impl RoomState {
     pub fn try_make_actions(mut self, user_id: &str, actions: &[Action]) -> Result<Self> {
         assert!(!actions.is_empty());
 
+        if let Some(ban) = self.users_banned.get(user_id) {
+            match ban.until {
+                None => return Err(Error::Banned),
+                Some(_) => todo!(),
+            }
+        }
+
         for action in actions {
             match action {
                 Action::Knock => todo!(),
@@ -828,6 +876,40 @@ impl RoomState {
                     {
                         self.drop_user_role(target, role)?;
                     }
+                }
+                Action::Ban {
+                    target,
+                    reason,
+                    until,
+                } => {
+                    if user_id == target || !self.is_capable(user_id, Capability::Ban)? {
+                        return Err(Error::NotCapable);
+                    }
+
+                    if self.is_protected_from(user_id, target)? {
+                        return Err(Error::NotCapable);
+                    }
+
+                    // Kick
+                    for role in self
+                        .user_roles
+                        .get(target)
+                        .ok_or(Error::UserNotInRoom)?
+                        .clone()
+                    {
+                        self.drop_user_role(target, role)?;
+                    }
+
+                    // Ban
+                    // If a ban already existed, this will replace it.
+                    self.users_banned.insert(
+                        target.clone(),
+                        BanInfo {
+                            creator: user_id.to_owned(),
+                            reason: reason.clone(),
+                            until: *until,
+                        },
+                    );
                 }
                 Action::GiveRole { target, role } => {
                     let valid_to_self = target == user_id
@@ -1264,6 +1346,29 @@ mod tests {
     }
 
     #[test]
+    fn kick_can_rejoin() {
+        let mut room_state = test_room();
+
+        // Mod kicks regular
+        room_state
+            .make_actions(
+                "@mod:phnx.im",
+                &[Action::Kick {
+                    target: "@regular:phnx.im".to_owned(),
+                }],
+            )
+            .unwrap();
+
+        // Can rejoin
+        room_state
+            .make_actions(
+                "@regular:phnx.im",
+                &room_state.join_room_actions("@regular:phnx.im").unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn user_not_in_room() {
         let mut room_state = test_room();
 
@@ -1275,6 +1380,76 @@ mod tests {
                 }],
             ),
             Err(Error::UserNotInRoom)
+        );
+    }
+
+    #[test]
+    fn banned_cannot_rejoin() {
+        let mut room_state = test_room();
+
+        // Send spam
+        room_state
+            .make_actions(
+                "@regular:phnx.im",
+                &[Action::SendMessage {
+                    message_type: MessageType::Image,
+                }],
+            )
+            .unwrap();
+
+        // Ban for spamming
+        room_state
+            .make_actions(
+                "@owner:phnx.im",
+                &[Action::Ban {
+                    target: "@regular:phnx.im".to_owned(),
+                    reason: "Spam".to_owned(),
+                    until: None,
+                }],
+            )
+            .unwrap();
+
+        // Cannot spam anymore
+        assert_eq!(
+            room_state.make_actions(
+                "@regular:phnx.im",
+                &[Action::SendMessage {
+                    message_type: MessageType::Image,
+                }],
+            ),
+            Err(Error::Banned)
+        );
+
+        // Cannot spam anymore
+        assert_eq!(
+            room_state.make_actions(
+                "@regular:phnx.im",
+                &[Action::SendMessage {
+                    message_type: MessageType::Image,
+                }],
+            ),
+            Err(Error::Banned)
+        );
+
+        // Cannot invite
+        assert_eq!(
+            room_state.make_actions(
+                "@owner:phnx.im",
+                &[Action::GiveRole {
+                    target: "@regular:phnx.im".to_owned(),
+                    role: RoleIndex::Restricted
+                }],
+            ),
+            Err(Error::Banned)
+        );
+
+        // Cannot rejoin
+        assert_eq!(
+            room_state.make_actions(
+                "@regular:phnx.im",
+                &room_state.join_room_actions("@regular:phnx.im").unwrap(),
+            ),
+            Err(Error::Banned)
         );
     }
 }
