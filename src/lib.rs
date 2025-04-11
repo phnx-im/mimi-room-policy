@@ -11,51 +11,62 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum Error {
     /// The operation would have no effect.
+    #[error("Nothing to do")]
     NothingToDo,
 
     /// The target role is not part of the room policy.
+    #[error("Role not defined")]
     RoleNotDefined,
 
     /// The user is not in the room.
+    #[error("User not in room")]
     UserNotInRoom,
 
     /// A user would have a role, but not the dependency roles.
+    #[error("Role dependency violated")]
     RoleDependencyViolated,
 
     /// Too few or too many users would have a role.
+    #[error("Role minimum or maximum member count violated")]
     RoleMinMaxViolated,
 
     /// The user does not have the required capability or the target is protected from the user.
+    #[error("User did not have a required capability")]
     NotCapable,
 
     /// Could not create a new role, because a role with this RoleIndex already exists.
+    #[error("Role already exists")]
     RoleAlreadyExists,
 
-    /// The action could not be taken, because of special rules for the relevant capability.
-    SpecialCapability,
-
     /// The action could not be taken, because of special rules for the relevant role.
+    #[error("Role is special and must have special properties")]
     SpecialRole,
 
     /// A string value could not be set, because it is too long.
+    #[error("String too long")]
     StringTooLong,
 
-    /// The dependencies could not be changed.
-    InvalidRoleDependencies,
-
     /// A role could not be removed, because there are still users with this role.
+    #[error("Role in use")]
     RoleInUse,
 
     /// The user was banned.
+    #[error("User is banned")]
     Banned,
+
+    #[error("Role definition invalid")]
     InvalidRoleDefinition,
+
+    #[error("Role definition for minimum or maximum member count invalid")]
     InvalidMinMaxConstraints,
+
+    #[error("Invalid role transition from {source_role:?} to {target_role:?}")]
     InvalidRoleTransition {
-        source: RoleIndex,
-        target: RoleIndex,
+        source_role: RoleIndex,
+        target_role: RoleIndex,
     },
 }
 
@@ -239,8 +250,6 @@ pub enum Optionality {
 pub struct RoomPolicy {
     roles: BTreeMap<RoleIndex, RoleInfo>,
 
-    uncommitted_proposals: Vec<MimiProposal>,
-
     membership_style: MembershipStyle,
     multi_device: bool,
     parent_room_uri: String,
@@ -385,7 +394,6 @@ impl RoomPolicy {
 
         Self {
             roles,
-            uncommitted_proposals: Vec::new(),
             membership_style: MembershipStyle::Ordinary,
             multi_device: true,
             parent_room_uri: "".to_owned(),
@@ -674,8 +682,8 @@ impl VerifiedRoomState {
                 for target_role in targets {
                     if source_role == target_role {
                         return Err(Error::InvalidRoleTransition {
-                            source: *source_role,
-                            target: *target_role,
+                            source_role: *source_role,
+                            target_role: *target_role,
                         });
                     }
                     if !state.policy.roles.contains_key(target_role) {
@@ -687,8 +695,8 @@ impl VerifiedRoomState {
             for target_role in &role_info.self_role_changes {
                 if role_index == target_role {
                     return Err(Error::InvalidRoleTransition {
-                        source: *role_index,
-                        target: *target_role,
+                        source_role: *role_index,
+                        target_role: *target_role,
                     });
                 }
                 if !state.policy.roles.contains_key(target_role) {
