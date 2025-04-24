@@ -746,7 +746,15 @@ impl VerifiedRoomState {
         self.0.has_capability(user_id, capability)
     }
 
-    pub fn try_regular_proposals(
+    pub fn test_regular_proposals(&self, sender: &u32, proposals: &[MimiProposal]) -> Result<()> {
+        let mut state = self.0.clone();
+
+        state.try_regular_proposals(sender, proposals)?;
+
+        Ok(())
+    }
+
+    pub fn apply_regular_proposals(
         &mut self,
         sender: &u32,
         proposals: &[MimiProposal],
@@ -760,7 +768,11 @@ impl VerifiedRoomState {
         Ok(())
     }
 
-    pub fn try_policy_proposals(&mut self, sender: &u32, proposals: &[MimiProposal]) -> Result<()> {
+    pub fn apply_policy_proposals(
+        &mut self,
+        sender: &u32,
+        proposals: &[MimiProposal],
+    ) -> Result<()> {
         let mut state = self.0.clone();
         state.policy.try_policy_proposals(proposals)?;
 
@@ -784,7 +796,7 @@ mod tests {
 
         // Bob cannot join
         assert_eq!(
-            room.try_regular_proposals(
+            room.apply_regular_proposals(
                 &bob,
                 &[MimiProposal::ChangeRole {
                     target: bob.clone(),
@@ -798,7 +810,7 @@ mod tests {
         assert!(!room.has_capability(&bob, Capability::SendMessage));
 
         // Alice can add Bob
-        room.try_regular_proposals(
+        room.apply_regular_proposals(
             &alice,
             &[MimiProposal::ChangeRole {
                 target: bob.clone(),
@@ -812,7 +824,7 @@ mod tests {
 
         // Bob cannot kick Alice
         assert_eq!(
-            room.try_regular_proposals(
+            room.apply_regular_proposals(
                 &bob,
                 &[MimiProposal::ChangeRole {
                     target: alice.clone(),
@@ -823,7 +835,7 @@ mod tests {
         );
 
         // Alice can kick bob
-        room.try_regular_proposals(
+        room.apply_regular_proposals(
             &alice,
             &[MimiProposal::ChangeRole {
                 target: bob.clone(),
@@ -845,7 +857,7 @@ mod tests {
         let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_public()).unwrap();
 
         // Bob can join
-        room.try_regular_proposals(
+        room.apply_regular_proposals(
             &bob,
             &[MimiProposal::ChangeRole {
                 target: bob.clone(),
@@ -855,7 +867,7 @@ mod tests {
         .unwrap();
 
         // Alice can kick bob
-        room.try_regular_proposals(
+        room.apply_regular_proposals(
             &alice,
             &[MimiProposal::ChangeRole {
                 target: bob.clone(),
@@ -865,7 +877,7 @@ mod tests {
         .unwrap();
 
         // Bob can rejoin
-        room.try_regular_proposals(
+        room.apply_regular_proposals(
             &bob,
             &[MimiProposal::ChangeRole {
                 target: bob.clone(),
@@ -875,7 +887,7 @@ mod tests {
         .unwrap();
 
         // Alice can ban bob
-        room.try_regular_proposals(
+        room.apply_regular_proposals(
             &alice,
             &[MimiProposal::ChangeRole {
                 target: bob.clone(),
@@ -886,7 +898,7 @@ mod tests {
 
         // Bob cannot rejoin
         assert_eq!(
-            room.try_regular_proposals(
+            room.apply_regular_proposals(
                 &bob,
                 &[MimiProposal::ChangeRole {
                     target: bob.clone(),
