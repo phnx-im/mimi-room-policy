@@ -73,7 +73,7 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// The specified roles have a special features in the room policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u32)]
 pub enum RoleIndex {
     /// Outsiders are not in the room and are not trusted at all.
@@ -92,7 +92,7 @@ pub enum RoleIndex {
 }
 
 /// The definition of a role for the room policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleInfo {
     role_name: String,
     role_description: String,
@@ -105,7 +105,7 @@ pub struct RoleInfo {
     self_role_changes: Vec<RoleIndex>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Capability {
     // AddParticipant,
     // RemoveParticipant,
@@ -173,7 +173,7 @@ pub enum Capability {
     // SendMLSReinitProposal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MimiProposal {
     //
     // Join a room, leave a room, kick a user, ban a user.
@@ -181,7 +181,7 @@ pub enum MimiProposal {
     ChangeRole { target: u32, role: RoleIndex },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MembershipStyle {
     Reserved = 0,
     Ordinary = 1,
@@ -189,7 +189,7 @@ pub enum MembershipStyle {
     ParentDependent = 3,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LinkPolicy {
     on_request: bool,
     join_link: String,
@@ -198,7 +198,7 @@ pub struct LinkPolicy {
     link_requests: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct LoggingPolicy {
     logging: Optionality,
     logging_clients: Vec<String>,
@@ -206,7 +206,7 @@ struct LoggingPolicy {
     human_readable_policy: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct HistoryPolicy {
     history_sharing: Optionality,
     who_can_share: Vec<RoleIndex>,
@@ -214,7 +214,7 @@ struct HistoryPolicy {
     max_time_period: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct Bot {
     description: String,
     homepage: String,
@@ -225,7 +225,7 @@ struct Bot {
     per_user_content: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PolicyExtension {
     name: String,
     value_type: (),
@@ -233,7 +233,7 @@ pub struct PolicyExtension {
 }
 
 /// A value to indicate preference of a feature.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Optionality {
     /// The decision is up to the user or client.
     Optional = 0,
@@ -246,7 +246,7 @@ pub enum Optionality {
 }
 
 /// The set of rules that the room will follow.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoomPolicy {
     roles: BTreeMap<RoleIndex, RoleInfo>,
 
@@ -570,7 +570,7 @@ impl RoomPolicy {
 }
 
 /// The state of the room.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoomState {
     /// The general rules for the room.
     policy: RoomPolicy,
@@ -627,7 +627,7 @@ impl RoomState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VerifiedRoomState(RoomState);
 
 impl VerifiedRoomState {
