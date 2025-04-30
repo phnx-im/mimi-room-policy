@@ -269,11 +269,23 @@ impl RoomPolicy {
     pub fn default_dm() -> Self {
         let mut roles = BTreeMap::new();
 
+        let outsider_role = RoleInfo {
+            role_name: "Outsider".to_owned(),
+            role_description: "".to_owned(),
+            role_capabilities: Vec::new(),
+            min_participants_constraint: 0,
+            max_participants_constraint: Some(0),
+            min_active_participants_constraint: 0,
+            max_active_participants_constraint: Some(0),
+            authorized_role_changes: BTreeMap::new(),
+            self_role_changes: Vec::new(),
+        };
+
         let regular_role = RoleInfo {
             role_name: "User".to_owned(),
             role_description: "".to_owned(),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
-            min_participants_constraint: 1,
+            min_participants_constraint: 0,
             max_participants_constraint: None,
             min_active_participants_constraint: 0,
             max_active_participants_constraint: None,
@@ -293,6 +305,7 @@ impl RoomPolicy {
             self_role_changes: Vec::new(),
         };
 
+        roles.insert(RoleIndex::Outsider, outsider_role);
         roles.insert(RoleIndex::Regular, regular_role);
         roles.insert(RoleIndex::Owner, owner_role);
 
@@ -639,7 +652,7 @@ impl VerifiedRoomState {
             return Err(Error::UserNotInRoom);
         }
 
-        // Outsider role must have name "Outsider" if it exists. And participants 0
+        // Outsider role must have name "Outsider" if it exists. And max_participants 0
         let Some(outsider_role) = state.policy.roles.get(&RoleIndex::Outsider) else {
             return Err(Error::SpecialRole);
         };
@@ -650,7 +663,7 @@ impl VerifiedRoomState {
             return Err(Error::SpecialRole);
         }
 
-        // Banned role must have name "Banned" if it exists. And active participants 0
+        // Banned role must have name "Banned" if it exists. And max active participants 0
         if let Some(banned_role) = state.policy.roles.get(&RoleIndex::Banned) {
             if banned_role.role_name != "Banned"
                 || banned_role.max_active_participants_constraint != Some(0)
@@ -785,6 +798,15 @@ impl VerifiedRoomState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dm_room() {
+        let alice = 0; //"alice".to_owned();
+        let bob = 1; //"bob".to_owned();
+
+        // Alice creates an invite-only room
+        let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_dm()).unwrap();
+    }
 
     #[test]
     fn invite_only_room() {
