@@ -759,7 +759,11 @@ impl VerifiedRoomState {
         self.0.has_capability(user_id, capability)
     }
 
-    pub fn test_regular_proposals(&self, sender: &u32, proposals: &[MimiProposal]) -> Result<()> {
+    pub fn can_apply_regular_proposals(
+        &self,
+        sender: &u32,
+        proposals: &[MimiProposal],
+    ) -> Result<()> {
         let mut state = self.0.clone();
 
         state.try_regular_proposals(sender, proposals)?;
