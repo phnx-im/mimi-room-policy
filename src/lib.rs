@@ -614,6 +614,11 @@ impl RoomState {
                     let sender_user_role = self.user_role(sender);
                     let target_user_role = self.user_role(target);
 
+                    // Do nothing if the role is already correct. This is required because a self-remove is applied twice: Once when submitted as a proposal and another time when the proposal is committed.
+                    if target_user_role == *role {
+                        continue;
+                    }
+
                     let possible_roles = if sender == target {
                         &*self.policy.roles[&sender_user_role].self_role_changes
                     } else {
