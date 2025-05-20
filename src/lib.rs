@@ -174,11 +174,11 @@ pub enum Capability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MimiProposal {
+pub enum MimiProposal<UserId> {
     //
     // Join a room, leave a room, kick a user, ban a user.
     //
-    ChangeRole { target: u32, role: RoleIndex },
+    ChangeRole { target: UserId, role: RoleIndex },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -576,7 +576,7 @@ impl RoomPolicy {
         }
     }
 
-    fn try_policy_proposals(&mut self, proposals: &[MimiProposal]) -> Result<()> {
+    fn try_policy_proposals(&mut self, proposals: &[()]) -> Result<()> {
         for proposal in proposals {}
         Ok(())
     }
@@ -584,30 +584,34 @@ impl RoomPolicy {
 
 /// The state of the room.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RoomState {
+pub struct RoomState<UserId: Ord + Clone> {
     /// The general rules for the room.
     policy: RoomPolicy,
 
-    users: BTreeMap<u32, RoleIndex>,
+    users: BTreeMap<UserId, RoleIndex>,
 }
 
-impl RoomState {
-    pub fn user_role(&self, user_id: &u32) -> RoleIndex {
+impl<UserId: Ord + Clone> RoomState<UserId> {
+    pub fn user_role(&self, user_id: &UserId) -> RoleIndex {
         self.users
             .get(user_id)
             .cloned()
             .unwrap_or(RoleIndex::Outsider)
     }
 
-    pub fn user_capabilities(&self, user_id: &u32) -> &[Capability] {
+    pub fn user_capabilities(&self, user_id: &UserId) -> &[Capability] {
         &self.policy.roles[&self.user_role(user_id)].role_capabilities
     }
 
-    pub fn has_capability(&self, user_id: &u32, capability: Capability) -> bool {
+    pub fn has_capability(&self, user_id: &UserId, capability: Capability) -> bool {
         self.user_capabilities(user_id).contains(&capability)
     }
 
-    fn try_regular_proposals(&mut self, sender: &u32, proposals: &[MimiProposal]) -> Result<()> {
+    fn try_regular_proposals(
+        &mut self,
+        sender: &UserId,
+        proposals: &[MimiProposal<UserId>],
+    ) -> Result<()> {
         for proposal in proposals {
             match proposal {
                 MimiProposal::ChangeRole { target, role } => {
@@ -646,10 +650,10 @@ impl RoomState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VerifiedRoomState(RoomState);
+pub struct VerifiedRoomState<UserId: Ord + Clone>(RoomState<UserId>);
 
-impl VerifiedRoomState {
-    fn consistency_checks(state: RoomState) -> Result<Self> {
+impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
+    fn consistency_checks(state: RoomState<UserId>) -> Result<Self> {
         // POLICY CHECKS
 
         // No outsiders are explicitly listed
@@ -751,23 +755,23 @@ impl VerifiedRoomState {
         Ok(VerifiedRoomState(state))
     }
 
-    pub fn new(owner: &u32, policy: RoomPolicy) -> Result<Self> {
+    pub fn new(owner: &UserId, policy: RoomPolicy) -> Result<Self> {
         let mut users = BTreeMap::new();
-        users.insert(owner.to_owned(), RoleIndex::Owner);
+        users.insert(owner.clone(), RoleIndex::Owner);
 
         let state = RoomState { users, policy };
 
         Self::consistency_checks(state)
     }
 
-    pub fn has_capability(&self, user_id: &u32, capability: Capability) -> bool {
+    pub fn has_capability(&self, user_id: &UserId, capability: Capability) -> bool {
         self.0.has_capability(user_id, capability)
     }
 
     pub fn can_apply_regular_proposals(
         &self,
-        sender: &u32,
-        proposals: &[MimiProposal],
+        sender: &UserId,
+        proposals: &[MimiProposal<UserId>],
     ) -> Result<()> {
         let mut state = self.0.clone();
 
@@ -778,8 +782,8 @@ impl VerifiedRoomState {
 
     pub fn apply_regular_proposals(
         &mut self,
-        sender: &u32,
-        proposals: &[MimiProposal],
+        sender: &UserId,
+        proposals: &[MimiProposal<UserId>],
     ) -> Result<()> {
         let mut state = self.0.clone();
 
@@ -790,11 +794,7 @@ impl VerifiedRoomState {
         Ok(())
     }
 
-    pub fn apply_policy_proposals(
-        &mut self,
-        sender: &u32,
-        proposals: &[MimiProposal],
-    ) -> Result<()> {
+    pub fn apply_policy_proposals(&mut self, sender: &UserId, proposals: &[()]) -> Result<()> {
         let mut state = self.0.clone();
         state.policy.try_policy_proposals(proposals)?;
 
@@ -810,8 +810,8 @@ mod tests {
 
     #[test]
     fn dm_room() {
-        let alice = 0; //"alice".to_owned();
-        let bob = 1; //"bob".to_owned();
+        let alice = "alice".to_owned();
+        let bob = "bob".to_owned();
 
         // Alice creates an invite-only room
         let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_dm()).unwrap();
@@ -819,8 +819,8 @@ mod tests {
 
     #[test]
     fn invite_only_room() {
-        let alice = 0; //"alice".to_owned();
-        let bob = 1; //"bob".to_owned();
+        let alice = "alice".to_owned();
+        let bob = "bob".to_owned();
 
         // Alice creates an invite-only room
         let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_private()).unwrap();
@@ -881,8 +881,8 @@ mod tests {
 
     #[test]
     fn public_room() {
-        let alice = 0; //"alice".to_owned();
-        let bob = 1; //"bob".to_owned();
+        let alice = "alice".to_owned();
+        let bob = "bob".to_owned();
 
         // Alice creates a public room
         let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_public()).unwrap();
