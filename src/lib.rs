@@ -7,9 +7,12 @@
 //! 2. State-changing capabilities: Proposals can use these capabilities to change the role assignments to users, but cannot change the roles themselves.
 //! 3. Timeline-changing capabilities: These capabilities are for sending messages, editing messages, starting a poll, etc. There are no room policy proposals for these capabilities. Instead, the code handling timeline events should consult the room policy to see if the event is allowed.
 
-use std::collections::BTreeMap;
+mod tls;
 
-use serde::{Deserialize, Serialize};
+use crate::tls::TlsString;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{collections::BTreeMap, io::Cursor};
+use tls_codec::{DeserializeBytes, TlsDeserializeBytes, TlsSerialize, TlsSize};
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum Error {
@@ -73,7 +76,21 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// The specified roles have a special features in the room policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 #[repr(u32)]
 pub enum RoleIndex {
     /// Outsiders are not in the room and are not trusted at all.
@@ -92,20 +109,47 @@ pub enum RoleIndex {
 }
 
 /// The definition of a role for the room policy.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 pub struct RoleInfo {
-    role_name: String,
-    role_description: String,
+    role_name: TlsString,
+    role_description: TlsString,
     role_capabilities: Vec<Capability>, // TODO: This could also be a bitvector
+
     min_participants_constraint: u32,
     max_participants_constraint: Option<u32>,
     min_active_participants_constraint: u32,
     max_active_participants_constraint: Option<u32>,
+    #[tls_codec(with = "tls::btreemap")]
     authorized_role_changes: BTreeMap<RoleIndex, Vec<RoleIndex>>,
     self_role_changes: Vec<RoleIndex>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
+#[repr(u8)]
 pub enum Capability {
     // AddParticipant,
     // RemoveParticipant,
@@ -173,15 +217,39 @@ pub enum Capability {
     // SendMLSReinitProposal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MimiProposal<UserId> {
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
+#[repr(u8)]
+pub enum MimiProposal<UserId: tls_codec::Serialize + DeserializeBytes> {
     //
     // Join a room, leave a room, kick a user, ban a user.
     //
     ChangeRole { target: UserId, role: RoleIndex },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
+#[repr(u8)]
 pub enum MembershipStyle {
     Reserved = 0,
     Ordinary = 1,
@@ -189,51 +257,125 @@ pub enum MembershipStyle {
     ParentDependent = 3,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 pub struct LinkPolicy {
+    #[tls_codec(with = "tls::bool")]
     on_request: bool,
-    join_link: String,
+    join_link: TlsString,
+    #[tls_codec(with = "tls::bool")]
     multiuser: bool,
     expiration: u32,
-    link_requests: String,
+    link_requests: TlsString,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 struct LoggingPolicy {
     logging: Optionality,
-    logging_clients: Vec<String>,
-    machine_readable_policy: String,
-    human_readable_policy: String,
+    logging_clients: Vec<TlsString>,
+    machine_readable_policy: TlsString,
+    human_readable_policy: TlsString,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 struct HistoryPolicy {
     history_sharing: Optionality,
     who_can_share: Vec<RoleIndex>,
+    #[tls_codec(with = "tls::bool")]
     automatically_share: bool,
     max_time_period: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 struct Bot {
-    description: String,
-    homepage: String,
+    description: TlsString,
+    homepage: TlsString,
     bot_role: RoleIndex,
+    #[tls_codec(with = "tls::bool")]
     can_read: bool,
+    #[tls_codec(with = "tls::bool")]
     can_write: bool,
+    #[tls_codec(with = "tls::bool")]
     can_target_message_in_group: bool,
+    #[tls_codec(with = "tls::bool")]
     per_user_content: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 pub struct PolicyExtension {
-    name: String,
+    name: TlsString,
     value_type: (),
     value: Vec<u8>,
 }
 
 /// A value to indicate preference of a feature.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
+#[repr(u8)]
 pub enum Optionality {
     /// The decision is up to the user or client.
     Optional = 0,
@@ -246,22 +388,39 @@ pub enum Optionality {
 }
 
 /// The set of rules that the room will follow.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
 pub struct RoomPolicy {
+    #[tls_codec(with = "tls::btreemap")]
     roles: BTreeMap<RoleIndex, RoleInfo>,
 
     membership_style: MembershipStyle,
+    #[tls_codec(with = "tls::bool")]
     multi_device: bool,
-    parent_room_uri: String,
+    parent_room_uri: TlsString,
+    #[tls_codec(with = "tls::bool")]
     persistent_room: bool,
     delivery_notifications: Optionality,
     read_receipts: Optionality,
+    #[tls_codec(with = "tls::bool")]
     semi_anonymous_ids: bool,
+    #[tls_codec(with = "tls::bool")]
     discoverable: bool,
     link_policy: LinkPolicy,
     logging_policy: LoggingPolicy,
     history_sharing: HistoryPolicy,
-    allowed_bots: BTreeMap<String, Bot>,
+    #[tls_codec(with = "tls::btreemap")]
+    allowed_bots: BTreeMap<TlsString, Bot>,
     policy_extensions: Vec<PolicyExtension>,
 }
 
@@ -270,8 +429,8 @@ impl RoomPolicy {
         let mut roles = BTreeMap::new();
 
         let outsider_role = RoleInfo {
-            role_name: "Outsider".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Outsider".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: Vec::new(),
             min_participants_constraint: 0,
             max_participants_constraint: Some(0),
@@ -282,8 +441,8 @@ impl RoomPolicy {
         };
 
         let regular_role = RoleInfo {
-            role_name: "User".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("User".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 0,
             max_participants_constraint: None,
@@ -294,8 +453,8 @@ impl RoomPolicy {
         };
 
         let owner_role = RoleInfo {
-            role_name: "Owner".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Owner".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 1,
             max_participants_constraint: Some(1),
@@ -353,8 +512,8 @@ impl RoomPolicy {
         );
 
         let outsider_role = RoleInfo {
-            role_name: "Outsider".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Outsider".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: Vec::new(),
             min_participants_constraint: 0,
             max_participants_constraint: Some(0),
@@ -365,8 +524,8 @@ impl RoomPolicy {
         };
 
         let regular_role = RoleInfo {
-            role_name: "Regular user".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Regular user".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 0,
             max_participants_constraint: None,
@@ -377,8 +536,8 @@ impl RoomPolicy {
         };
 
         let admin_role = RoleInfo {
-            role_name: "Admin".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Admin".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 0,
             max_participants_constraint: None,
@@ -389,8 +548,8 @@ impl RoomPolicy {
         };
 
         let owner_role = RoleInfo {
-            role_name: "Owner".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Owner".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 1,
             max_participants_constraint: Some(1),
@@ -409,7 +568,7 @@ impl RoomPolicy {
             roles,
             membership_style: MembershipStyle::Ordinary,
             multi_device: true,
-            parent_room_uri: "".to_owned(),
+            parent_room_uri: TlsString("".to_owned()),
             persistent_room: false,
             delivery_notifications: Optionality::Optional,
             read_receipts: Optionality::Optional,
@@ -417,16 +576,16 @@ impl RoomPolicy {
             discoverable: false,
             link_policy: LinkPolicy {
                 on_request: true,
-                join_link: "".to_owned(),
+                join_link: TlsString("".to_owned()),
                 multiuser: true,
                 expiration: 0,
-                link_requests: "".to_owned(),
+                link_requests: TlsString("".to_owned()),
             },
             logging_policy: LoggingPolicy {
                 logging: Optionality::Forbidden,
                 logging_clients: Vec::new(),
-                machine_readable_policy: "".to_owned(),
-                human_readable_policy: "".to_owned(),
+                machine_readable_policy: TlsString("".to_owned()),
+                human_readable_policy: TlsString("".to_owned()),
             },
             history_sharing: HistoryPolicy {
                 history_sharing: Optionality::Forbidden,
@@ -499,8 +658,8 @@ impl RoomPolicy {
         );
 
         let outsider_role = RoleInfo {
-            role_name: "Outsider".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Outsider".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: Vec::new(),
             min_participants_constraint: 0,
             max_participants_constraint: Some(0),
@@ -511,8 +670,8 @@ impl RoomPolicy {
         };
 
         let banned_role = RoleInfo {
-            role_name: "Banned".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Banned".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: Vec::new(),
             min_participants_constraint: 0,
             max_participants_constraint: None,
@@ -523,8 +682,8 @@ impl RoomPolicy {
         };
 
         let regular_role = RoleInfo {
-            role_name: "Regular user".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Regular user".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 0,
             max_participants_constraint: None,
@@ -535,8 +694,8 @@ impl RoomPolicy {
         };
 
         let admin_role = RoleInfo {
-            role_name: "Admin".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Admin".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 0,
             max_participants_constraint: None,
@@ -547,8 +706,8 @@ impl RoomPolicy {
         };
 
         let owner_role = RoleInfo {
-            role_name: "Owner".to_owned(),
-            role_description: "".to_owned(),
+            role_name: TlsString("Owner".to_owned()),
+            role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
             min_participants_constraint: 1,
             max_participants_constraint: Some(1),
@@ -583,31 +742,73 @@ impl RoomPolicy {
 }
 
 /// The state of the room.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RoomState<UserId: Ord + Clone> {
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
+pub struct RoomState {
     /// The general rules for the room.
     policy: RoomPolicy,
 
-    users: BTreeMap<UserId, RoleIndex>,
+    #[tls_codec(with = "tls::btreemap")]
+    users: BTreeMap<Vec<u8>, RoleIndex>,
 }
 
-impl<UserId: Ord + Clone> RoomState<UserId> {
-    pub fn user_role(&self, user_id: &UserId) -> RoleIndex {
+fn tls_serialize<T: tls_codec::Serialize>(val: &T) -> Vec<u8> {
+    let mut vec = Vec::new();
+    val.tls_serialize(&mut vec).unwrap();
+    vec
+}
+
+fn tls_deserialize<T: DeserializeBytes>(val: &[u8]) -> T {
+    T::tls_deserialize_bytes(&val).unwrap().0
+}
+
+fn cbor_serialize<T: Serialize>(val: T) -> Vec<u8> {
+    let mut result = Vec::new();
+    ciborium::ser::into_writer(&val, &mut result).unwrap();
+    result
+}
+
+fn cbor_deserialize<T: DeserializeOwned>(input: &[u8]) -> T {
+    ciborium::de::from_reader(Cursor::new(input)).unwrap()
+}
+
+impl RoomState {
+    pub fn user_role<UserId: tls_codec::Serialize + DeserializeBytes>(
+        &self,
+        user_id: &UserId,
+    ) -> RoleIndex {
         self.users
-            .get(user_id)
+            .get(&tls_serialize(user_id))
             .cloned()
             .unwrap_or(RoleIndex::Outsider)
     }
 
-    pub fn user_capabilities(&self, user_id: &UserId) -> &[Capability] {
+    pub fn user_capabilities<UserId: tls_codec::Serialize + DeserializeBytes>(
+        &self,
+        user_id: &UserId,
+    ) -> &[Capability] {
         &self.policy.roles[&self.user_role(user_id)].role_capabilities
     }
 
-    pub fn has_capability(&self, user_id: &UserId, capability: Capability) -> bool {
+    pub fn has_capability<UserId: tls_codec::Serialize + DeserializeBytes>(
+        &self,
+        user_id: &UserId,
+        capability: Capability,
+    ) -> bool {
         self.user_capabilities(user_id).contains(&capability)
     }
 
-    fn try_regular_proposals(
+    fn try_regular_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
         &mut self,
         sender: &UserId,
         proposals: &[MimiProposal<UserId>],
@@ -623,7 +824,7 @@ impl<UserId: Ord + Clone> RoomState<UserId> {
                         continue;
                     }
 
-                    let possible_roles = if sender == target {
+                    let possible_roles = if tls_serialize(sender) == tls_serialize(target) {
                         &*self.policy.roles[&sender_user_role].self_role_changes
                     } else {
                         self.policy.roles[&sender_user_role]
@@ -634,9 +835,9 @@ impl<UserId: Ord + Clone> RoomState<UserId> {
 
                     if possible_roles.contains(role) {
                         if *role == RoleIndex::Outsider {
-                            self.users.remove(target);
+                            self.users.remove(&tls_serialize(target));
                         } else {
-                            self.users.insert(target.clone(), role.clone());
+                            self.users.insert(tls_serialize(target), role.clone());
                         }
                     } else {
                         return Err(Error::NotCapable);
@@ -649,11 +850,22 @@ impl<UserId: Ord + Clone> RoomState<UserId> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VerifiedRoomState<UserId: Ord + Clone>(RoomState<UserId>);
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserializeBytes,
+)]
+pub struct VerifiedRoomState(RoomState);
 
-impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
-    fn consistency_checks(state: RoomState<UserId>) -> Result<Self> {
+impl VerifiedRoomState {
+    fn consistency_checks(state: RoomState) -> Result<Self> {
         // POLICY CHECKS
 
         // No outsiders are explicitly listed
@@ -666,7 +878,7 @@ impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
             return Err(Error::SpecialRole);
         };
 
-        if outsider_role.role_name != "Outsider"
+        if *outsider_role.role_name != "Outsider"
             || outsider_role.max_participants_constraint != Some(0)
         {
             return Err(Error::SpecialRole);
@@ -674,7 +886,7 @@ impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
 
         // Banned role must have name "Banned" if it exists. And max active participants 0
         if let Some(banned_role) = state.policy.roles.get(&RoleIndex::Banned) {
-            if banned_role.role_name != "Banned"
+            if *banned_role.role_name != "Banned"
                 || banned_role.max_active_participants_constraint != Some(0)
             {
                 return Err(Error::SpecialRole);
@@ -755,20 +967,27 @@ impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
         Ok(VerifiedRoomState(state))
     }
 
-    pub fn new(owner: &UserId, policy: RoomPolicy) -> Result<Self> {
+    pub fn new<UserId: tls_codec::Serialize + DeserializeBytes>(
+        owner: &UserId,
+        policy: RoomPolicy,
+    ) -> Result<Self> {
         let mut users = BTreeMap::new();
-        users.insert(owner.clone(), RoleIndex::Owner);
+        users.insert(tls_serialize(owner), RoleIndex::Owner);
 
         let state = RoomState { users, policy };
 
         Self::consistency_checks(state)
     }
 
-    pub fn has_capability(&self, user_id: &UserId, capability: Capability) -> bool {
+    pub fn has_capability<UserId: tls_codec::Serialize + DeserializeBytes>(
+        &self,
+        user_id: &UserId,
+        capability: Capability,
+    ) -> bool {
         self.0.has_capability(user_id, capability)
     }
 
-    pub fn can_apply_regular_proposals(
+    pub fn can_apply_regular_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
         &self,
         sender: &UserId,
         proposals: &[MimiProposal<UserId>],
@@ -780,7 +999,7 @@ impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
         Ok(())
     }
 
-    pub fn apply_regular_proposals(
+    pub fn apply_regular_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
         &mut self,
         sender: &UserId,
         proposals: &[MimiProposal<UserId>],
@@ -794,7 +1013,11 @@ impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
         Ok(())
     }
 
-    pub fn apply_policy_proposals(&mut self, sender: &UserId, proposals: &[()]) -> Result<()> {
+    pub fn apply_policy_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
+        &mut self,
+        sender: &UserId,
+        proposals: &[()],
+    ) -> Result<()> {
         let mut state = self.0.clone();
         state.policy.try_policy_proposals(proposals)?;
 
@@ -806,21 +1029,27 @@ impl<UserId: Ord + Clone> VerifiedRoomState<UserId> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
     fn dm_room() {
-        let alice = "alice".to_owned();
-        let bob = "bob".to_owned();
+        let alice = TlsString("alice".to_owned());
+        let bob = TlsString("bob".to_owned());
 
         // Alice creates an invite-only room
-        let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_dm()).unwrap();
+        let room = VerifiedRoomState::new(&alice, RoomPolicy::default_dm()).unwrap();
+
+        let room2 = tls_deserialize(&tls_serialize(&room));
+        assert_eq!(room, room2);
+        let room3 = cbor_deserialize(&cbor_serialize(&room));
+        assert_eq!(room, room3);
     }
 
     #[test]
     fn invite_only_room() {
-        let alice = "alice".to_owned();
-        let bob = "bob".to_owned();
+        let alice = TlsString("alice".to_owned());
+        let bob = TlsString("bob".to_owned());
 
         // Alice creates an invite-only room
         let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_private()).unwrap();
@@ -877,12 +1106,17 @@ mod tests {
 
         // Bob cannot send messages
         assert!(!room.has_capability(&bob, Capability::SendMessage));
+
+        let room2 = tls_deserialize(&tls_serialize(&room));
+        assert_eq!(room, room2);
+        let room3 = cbor_deserialize(&cbor_serialize(&room));
+        assert_eq!(room, room3);
     }
 
     #[test]
     fn public_room() {
-        let alice = "alice".to_owned();
-        let bob = "bob".to_owned();
+        let alice = TlsString("alice".to_owned());
+        let bob = TlsString("bob".to_owned());
 
         // Alice creates a public room
         let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_public()).unwrap();
@@ -938,5 +1172,10 @@ mod tests {
             ),
             Err(Error::NotCapable)
         );
+
+        let room2 = tls_deserialize(&tls_serialize(&room));
+        assert_eq!(room, room2);
+        let room3 = cbor_deserialize(&cbor_serialize(&room));
+        assert_eq!(room, room3);
     }
 }
