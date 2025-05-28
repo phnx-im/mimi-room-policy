@@ -979,8 +979,8 @@ impl VerifiedRoomState {
         Self::verify(state)
     }
 
-    pub fn unverify(self) -> RoomState {
-        self.0
+    pub fn unverified(&self) -> &RoomState {
+        &self.0
     }
 
     pub fn has_capability<UserId: tls_codec::Serialize + DeserializeBytes>(
