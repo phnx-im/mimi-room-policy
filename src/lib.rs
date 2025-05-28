@@ -865,7 +865,7 @@ impl RoomState {
 pub struct VerifiedRoomState(RoomState);
 
 impl VerifiedRoomState {
-    fn consistency_checks(state: RoomState) -> Result<Self> {
+    pub fn verify(state: RoomState) -> Result<Self> {
         // POLICY CHECKS
 
         // No outsiders are explicitly listed
@@ -976,7 +976,11 @@ impl VerifiedRoomState {
 
         let state = RoomState { users, policy };
 
-        Self::consistency_checks(state)
+        Self::verify(state)
+    }
+
+    pub fn unverify(self) -> RoomState {
+        self.0
     }
 
     pub fn has_capability<UserId: tls_codec::Serialize + DeserializeBytes>(
@@ -1008,7 +1012,7 @@ impl VerifiedRoomState {
 
         state.try_regular_proposals(sender, proposals)?;
 
-        *self = Self::consistency_checks(state)?;
+        *self = Self::verify(state)?;
 
         Ok(())
     }
@@ -1021,7 +1025,7 @@ impl VerifiedRoomState {
         let mut state = self.0.clone();
         state.policy.try_policy_proposals(proposals)?;
 
-        *self = Self::consistency_checks(state)?;
+        *self = Self::verify(state)?;
 
         Ok(())
     }
