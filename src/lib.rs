@@ -979,6 +979,30 @@ impl VerifiedRoomState {
         Self::verify(state)
     }
 
+    pub fn fallback_room<UserId: tls_codec::Serialize + DeserializeBytes>(
+        members: Vec<UserId>,
+    ) -> VerifiedRoomState {
+        let mut members_iter = members.into_iter();
+        let owner = members_iter.next().unwrap();
+
+        let mut room_state = VerifiedRoomState::new(&owner, RoomPolicy::default_private())
+            .expect("we know the policy, this cannot fail");
+
+        for user in members_iter {
+            room_state
+                .apply_regular_proposals(
+                    &owner,
+                    &[MimiProposal::ChangeRole {
+                        target: user,
+                        role: RoleIndex::Regular,
+                    }],
+                )
+                .expect("we know the policy, this cannot fail");
+        }
+
+        room_state
+    }
+
     pub fn unverified(&self) -> &RoomState {
         &self.0
     }
