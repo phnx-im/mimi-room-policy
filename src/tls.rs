@@ -109,6 +109,8 @@ pub mod btreemap {
         V: Serialize,
         W: io::Write,
     {
+        // This implementation follows the impl of slice serialization from the tls_codec crate
+        //
         // We need to pre-compute the length of the content.
         // This requires more computations but the other option would be to buffer
         // the entire content, which can end up requiring a lot of memory.
