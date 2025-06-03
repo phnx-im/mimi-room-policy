@@ -82,22 +82,9 @@ impl Serialize for TlsString {
     }
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, TlsSize, TlsSerialize, TlsDeserializeBytes,
-)]
-pub struct TlsPair<
-    K: std::fmt::Debug + Serialize + DeserializeBytes,
-    V: std::fmt::Debug + Serialize + DeserializeBytes,
-> {
-    k: K,
-    v: V,
-}
-
 pub mod btreemap {
     use std::collections::BTreeMap;
     use tls_codec::{DeserializeBytes, Serialize, Size};
-
-    use super::TlsPair;
 
     pub fn tls_serialize<K, V, W: std::io::Write>(
         v: &BTreeMap<K, V>,
@@ -109,10 +96,7 @@ pub mod btreemap {
     {
         let vec = v
             .iter()
-            .map(|(k, v)| TlsPair {
-                k: k.clone(),
-                v: v.clone(),
-            })
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect::<Vec<_>>();
         vec.tls_serialize(writer)
     }
@@ -123,11 +107,8 @@ pub mod btreemap {
         K: std::fmt::Debug + Clone + Serialize + DeserializeBytes + Ord,
         V: std::fmt::Debug + Clone + Serialize + DeserializeBytes,
     {
-        let (val, rest) = <Vec<TlsPair<K, V>>>::tls_deserialize_bytes(bytes)?;
-        let btreemap = val
-            .into_iter()
-            .map(|p| (p.k, p.v))
-            .collect::<BTreeMap<K, V>>();
+        let (val, rest) = <Vec<(K, V)>>::tls_deserialize_bytes(bytes)?;
+        let btreemap = val.into_iter().collect::<BTreeMap<K, V>>();
         Ok((btreemap, rest))
     }
     pub fn tls_serialized_len<K, V>(v: &BTreeMap<K, V>) -> usize
@@ -137,10 +118,7 @@ pub mod btreemap {
     {
         let vec = v
             .iter()
-            .map(|(k, v)| TlsPair {
-                k: k.clone(),
-                v: v.clone(),
-            })
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect::<Vec<_>>();
         vec.tls_serialized_len()
     }

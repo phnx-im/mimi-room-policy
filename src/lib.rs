@@ -230,11 +230,11 @@ pub enum Capability {
     TlsDeserializeBytes,
 )]
 #[repr(u8)]
-pub enum MimiProposal<UserId: tls_codec::Serialize + DeserializeBytes> {
+pub enum MimiProposal {
     //
     // Join a room, leave a room, kick a user, ban a user.
     //
-    ChangeRole { target: UserId, role: RoleIndex },
+    ChangeRole { target: Vec<u8>, role: RoleIndex },
 }
 
 #[derive(
@@ -763,36 +763,22 @@ pub struct RoomState {
 }
 
 impl RoomState {
-    pub fn user_role<UserId: tls_codec::Serialize + DeserializeBytes>(
-        &self,
-        user_id: &UserId,
-    ) -> RoleIndex {
+    pub fn user_role(&self, user_id: &[u8]) -> RoleIndex {
         self.users
-            .get(&tls_serialize(user_id))
+            .get(user_id)
             .cloned()
             .unwrap_or(RoleIndex::Outsider)
     }
 
-    pub fn user_capabilities<UserId: tls_codec::Serialize + DeserializeBytes>(
-        &self,
-        user_id: &UserId,
-    ) -> &[Capability] {
+    pub fn user_capabilities(&self, user_id: &[u8]) -> &[Capability] {
         &self.policy.roles[&self.user_role(user_id)].role_capabilities
     }
 
-    pub fn has_capability<UserId: tls_codec::Serialize + DeserializeBytes>(
-        &self,
-        user_id: &UserId,
-        capability: Capability,
-    ) -> bool {
+    pub fn has_capability(&self, user_id: &[u8], capability: Capability) -> bool {
         self.user_capabilities(user_id).contains(&capability)
     }
 
-    fn try_regular_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
-        &mut self,
-        sender: &UserId,
-        proposals: &[MimiProposal<UserId>],
-    ) -> Result<()> {
+    fn try_regular_proposals(&mut self, sender: &[u8], proposals: &[MimiProposal]) -> Result<()> {
         for proposal in proposals {
             match proposal {
                 MimiProposal::ChangeRole { target, role } => {
@@ -804,7 +790,7 @@ impl RoomState {
                         continue;
                     }
 
-                    let possible_roles = if tls_serialize(sender) == tls_serialize(target) {
+                    let possible_roles = if sender == target {
                         &*self.policy.roles[&sender_user_role].self_role_changes
                     } else {
                         self.policy.roles[&sender_user_role]
@@ -815,9 +801,9 @@ impl RoomState {
 
                     if possible_roles.contains(role) {
                         if *role == RoleIndex::Outsider {
-                            self.users.remove(&tls_serialize(target));
+                            self.users.remove(target);
                         } else {
-                            self.users.insert(tls_serialize(target), *role);
+                            self.users.insert(target.clone(), *role);
                         }
                     } else {
                         return Err(Error::NotCapable);
@@ -947,25 +933,20 @@ impl VerifiedRoomState {
         Ok(VerifiedRoomState(state))
     }
 
-    pub fn new<UserId: tls_codec::Serialize + DeserializeBytes>(
-        owner: &UserId,
-        policy: RoomPolicy,
-    ) -> Result<Self> {
+    pub fn new(owner: Vec<u8>, policy: RoomPolicy) -> Result<Self> {
         let mut users = BTreeMap::new();
-        users.insert(tls_serialize(owner), RoleIndex::Owner);
+        users.insert(owner, RoleIndex::Owner);
 
         let state = RoomState { users, policy };
 
         Self::verify(state)
     }
 
-    pub fn fallback_room<UserId: tls_codec::Serialize + DeserializeBytes>(
-        members: Vec<UserId>,
-    ) -> VerifiedRoomState {
+    pub fn fallback_room(members: Vec<Vec<u8>>) -> VerifiedRoomState {
         let mut members_iter = members.into_iter();
         let owner = members_iter.next().unwrap();
 
-        let mut room_state = VerifiedRoomState::new(&owner, RoomPolicy::default_private())
+        let mut room_state = VerifiedRoomState::new(owner.clone(), RoomPolicy::default_private())
             .expect("we know the policy, this cannot fail");
 
         for user in members_iter {
@@ -987,18 +968,14 @@ impl VerifiedRoomState {
         &self.0
     }
 
-    pub fn has_capability<UserId: tls_codec::Serialize + DeserializeBytes>(
-        &self,
-        user_id: &UserId,
-        capability: Capability,
-    ) -> bool {
+    pub fn has_capability(&self, user_id: &[u8], capability: Capability) -> bool {
         self.0.has_capability(user_id, capability)
     }
 
-    pub fn can_apply_regular_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
+    pub fn can_apply_regular_proposals(
         &self,
-        sender: &UserId,
-        proposals: &[MimiProposal<UserId>],
+        sender: &[u8],
+        proposals: &[MimiProposal],
     ) -> Result<()> {
         let mut state = self.0.clone();
 
@@ -1007,10 +984,10 @@ impl VerifiedRoomState {
         Ok(())
     }
 
-    pub fn apply_regular_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
+    pub fn apply_regular_proposals(
         &mut self,
-        sender: &UserId,
-        proposals: &[MimiProposal<UserId>],
+        sender: &[u8],
+        proposals: &[MimiProposal],
     ) -> Result<()> {
         let mut state = self.0.clone();
 
@@ -1021,11 +998,7 @@ impl VerifiedRoomState {
         Ok(())
     }
 
-    pub fn apply_policy_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
-        &mut self,
-        _sender: &UserId,
-        proposals: &[()],
-    ) -> Result<()> {
+    pub fn apply_policy_proposals(&mut self, _sender: &[u8], proposals: &[()]) -> Result<()> {
         let mut state = self.0.clone();
         state.policy.try_policy_proposals(proposals)?;
 
@@ -1035,20 +1008,19 @@ impl VerifiedRoomState {
     }
 }
 
-fn tls_serialize<T: tls_codec::Serialize>(val: &T) -> Vec<u8> {
-    let mut vec = Vec::new();
-    val.tls_serialize(&mut vec).unwrap();
-    vec
-}
-
 #[cfg(test)]
 mod tests {
-
     use std::io::Cursor;
 
     use serde::de::DeserializeOwned;
 
     use super::*;
+
+    fn tls_serialize<T: tls_codec::Serialize>(val: &T) -> Vec<u8> {
+        let mut vec = Vec::new();
+        val.tls_serialize(&mut vec).unwrap();
+        vec
+    }
 
     fn tls_deserialize<T: DeserializeBytes>(val: &[u8]) -> T {
         T::tls_deserialize_bytes(val).unwrap().0
@@ -1066,10 +1038,10 @@ mod tests {
 
     #[test]
     fn dm_room() {
-        let alice = TlsString("alice".to_owned());
+        let alice = b"alice";
 
         // Alice creates an invite-only room
-        let room = VerifiedRoomState::new(&alice, RoomPolicy::default_dm()).unwrap();
+        let room = VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_dm()).unwrap();
 
         let room2 = tls_deserialize(&tls_serialize(&room));
         assert_eq!(room, room2);
@@ -1079,18 +1051,19 @@ mod tests {
 
     #[test]
     fn invite_only_room() {
-        let alice = TlsString("alice".to_owned());
-        let bob = TlsString("bob".to_owned());
+        let alice = b"alice";
+        let bob = b"bob";
 
         // Alice creates an invite-only room
-        let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_private()).unwrap();
+        let mut room =
+            VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_private()).unwrap();
 
         // Bob cannot join
         assert_eq!(
             room.apply_regular_proposals(
-                &bob,
+                bob,
                 &[MimiProposal::ChangeRole {
-                    target: bob.clone(),
+                    target: bob.to_vec(),
                     role: RoleIndex::Regular,
                 }],
             ),
@@ -1098,27 +1071,27 @@ mod tests {
         );
 
         // Bob cannot send messages
-        assert!(!room.has_capability(&bob, Capability::SendMessage));
+        assert!(!room.has_capability(bob, Capability::SendMessage));
 
         // Alice can add Bob
         room.apply_regular_proposals(
-            &alice,
+            alice,
             &[MimiProposal::ChangeRole {
-                target: bob.clone(),
+                target: bob.to_vec(),
                 role: RoleIndex::Regular,
             }],
         )
         .unwrap();
 
         // Bob can now send messages
-        assert!(room.has_capability(&bob, Capability::SendMessage));
+        assert!(room.has_capability(bob, Capability::SendMessage));
 
         // Bob cannot kick Alice
         assert_eq!(
             room.apply_regular_proposals(
-                &bob,
+                bob,
                 &[MimiProposal::ChangeRole {
-                    target: alice.clone(),
+                    target: alice.to_vec(),
                     role: RoleIndex::Outsider,
                 }],
             ),
@@ -1127,16 +1100,16 @@ mod tests {
 
         // Alice can kick bob
         room.apply_regular_proposals(
-            &alice,
+            alice,
             &[MimiProposal::ChangeRole {
-                target: bob.clone(),
+                target: bob.to_vec(),
                 role: RoleIndex::Outsider,
             }],
         )
         .unwrap();
 
         // Bob cannot send messages
-        assert!(!room.has_capability(&bob, Capability::SendMessage));
+        assert!(!room.has_capability(bob, Capability::SendMessage));
 
         let room2 = tls_deserialize(&tls_serialize(&room));
         assert_eq!(room, room2);
@@ -1146,17 +1119,18 @@ mod tests {
 
     #[test]
     fn public_room() {
-        let alice = TlsString("alice".to_owned());
-        let bob = TlsString("bob".to_owned());
+        let alice = b"alice";
+        let bob = b"bob";
 
         // Alice creates a public room
-        let mut room = VerifiedRoomState::new(&alice, RoomPolicy::default_public()).unwrap();
+        let mut room =
+            VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_public()).unwrap();
 
         // Bob can join
         room.apply_regular_proposals(
-            &bob,
+            bob,
             &[MimiProposal::ChangeRole {
-                target: bob.clone(),
+                target: bob.to_vec(),
                 role: RoleIndex::Regular,
             }],
         )
@@ -1164,9 +1138,9 @@ mod tests {
 
         // Alice can kick bob
         room.apply_regular_proposals(
-            &alice,
+            alice,
             &[MimiProposal::ChangeRole {
-                target: bob.clone(),
+                target: bob.to_vec(),
                 role: RoleIndex::Outsider,
             }],
         )
@@ -1174,9 +1148,9 @@ mod tests {
 
         // Bob can rejoin
         room.apply_regular_proposals(
-            &bob,
+            bob,
             &[MimiProposal::ChangeRole {
-                target: bob.clone(),
+                target: bob.to_vec(),
                 role: RoleIndex::Regular,
             }],
         )
@@ -1184,9 +1158,9 @@ mod tests {
 
         // Alice can ban bob
         room.apply_regular_proposals(
-            &alice,
+            alice,
             &[MimiProposal::ChangeRole {
-                target: bob.clone(),
+                target: bob.to_vec(),
                 role: RoleIndex::Banned,
             }],
         )
@@ -1195,9 +1169,9 @@ mod tests {
         // Bob cannot rejoin
         assert_eq!(
             room.apply_regular_proposals(
-                &bob,
+                bob,
                 &[MimiProposal::ChangeRole {
-                    target: bob.clone(),
+                    target: bob.to_vec(),
                     role: RoleIndex::Regular,
                 }],
             ),
