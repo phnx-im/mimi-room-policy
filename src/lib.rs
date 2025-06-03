@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     fn tls_deserialize<T: DeserializeBytes>(val: &[u8]) -> T {
-        T::tls_deserialize_bytes(val).unwrap().0
+        T::tls_deserialize_exact_bytes(val).unwrap()
     }
 
     fn cbor_serialize<T: Serialize>(val: T) -> Vec<u8> {
