@@ -12,7 +12,7 @@ mod tls;
 use crate::tls::TlsString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tls_codec::{DeserializeBytes, TlsDeserializeBytes, TlsSerialize, TlsSize};
+use tls_codec::{TlsDeserializeBytes, TlsSerialize, TlsSize};
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum Error {
@@ -1013,6 +1013,7 @@ mod tests {
     use std::io::Cursor;
 
     use serde::de::DeserializeOwned;
+    use tls_codec::DeserializeBytes;
 
     use super::*;
 
