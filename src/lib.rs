@@ -10,8 +10,8 @@
 mod tls;
 
 use crate::tls::TlsString;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{collections::BTreeMap, io::Cursor};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tls_codec::{DeserializeBytes, TlsDeserializeBytes, TlsSerialize, TlsSize};
 
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -736,7 +736,7 @@ impl RoomPolicy {
     }
 
     fn try_policy_proposals(&mut self, proposals: &[()]) -> Result<()> {
-        for proposal in proposals {}
+        for _proposal in proposals {}
         Ok(())
     }
 }
@@ -760,26 +760,6 @@ pub struct RoomState {
 
     #[tls_codec(with = "tls::btreemap")]
     users: BTreeMap<Vec<u8>, RoleIndex>,
-}
-
-fn tls_serialize<T: tls_codec::Serialize>(val: &T) -> Vec<u8> {
-    let mut vec = Vec::new();
-    val.tls_serialize(&mut vec).unwrap();
-    vec
-}
-
-fn tls_deserialize<T: DeserializeBytes>(val: &[u8]) -> T {
-    T::tls_deserialize_bytes(&val).unwrap().0
-}
-
-fn cbor_serialize<T: Serialize>(val: T) -> Vec<u8> {
-    let mut result = Vec::new();
-    ciborium::ser::into_writer(&val, &mut result).unwrap();
-    result
-}
-
-fn cbor_deserialize<T: DeserializeOwned>(input: &[u8]) -> T {
-    ciborium::de::from_reader(Cursor::new(input)).unwrap()
 }
 
 impl RoomState {
@@ -837,7 +817,7 @@ impl RoomState {
                         if *role == RoleIndex::Outsider {
                             self.users.remove(&tls_serialize(target));
                         } else {
-                            self.users.insert(tls_serialize(target), role.clone());
+                            self.users.insert(tls_serialize(target), *role);
                         }
                     } else {
                         return Err(Error::NotCapable);
@@ -1043,7 +1023,7 @@ impl VerifiedRoomState {
 
     pub fn apply_policy_proposals<UserId: tls_codec::Serialize + DeserializeBytes>(
         &mut self,
-        sender: &UserId,
+        _sender: &UserId,
         proposals: &[()],
     ) -> Result<()> {
         let mut state = self.0.clone();
@@ -1055,15 +1035,38 @@ impl VerifiedRoomState {
     }
 }
 
+fn tls_serialize<T: tls_codec::Serialize>(val: &T) -> Vec<u8> {
+    let mut vec = Vec::new();
+    val.tls_serialize(&mut vec).unwrap();
+    vec
+}
+
 #[cfg(test)]
 mod tests {
 
+    use std::io::Cursor;
+
+    use serde::de::DeserializeOwned;
+
     use super::*;
+
+    fn tls_deserialize<T: DeserializeBytes>(val: &[u8]) -> T {
+        T::tls_deserialize_bytes(val).unwrap().0
+    }
+
+    fn cbor_serialize<T: Serialize>(val: T) -> Vec<u8> {
+        let mut result = Vec::new();
+        ciborium::ser::into_writer(&val, &mut result).unwrap();
+        result
+    }
+
+    fn cbor_deserialize<T: DeserializeOwned>(input: &[u8]) -> T {
+        ciborium::de::from_reader(Cursor::new(input)).unwrap()
+    }
 
     #[test]
     fn dm_room() {
         let alice = TlsString("alice".to_owned());
-        let bob = TlsString("bob".to_owned());
 
         // Alice creates an invite-only room
         let room = VerifiedRoomState::new(&alice, RoomPolicy::default_dm()).unwrap();
