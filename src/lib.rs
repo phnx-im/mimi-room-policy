@@ -73,24 +73,10 @@ pub enum Error {
     },
 }
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// The specified roles have a special features in the room policy.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    TlsSize,
-    TlsSerialize,
-    TlsDeserializeBytes,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u32)]
 pub enum RoleIndex {
     /// Outsiders are not in the room and are not trusted at all.
@@ -106,6 +92,70 @@ pub enum RoleIndex {
 
     /// Custom roles
     Custom(u32),
+}
+
+impl tls_codec::Size for RoleIndex {
+    fn tls_serialized_len(&self) -> usize {
+        0_u32.tls_serialized_len()
+    }
+}
+
+// TODO: Use macro like in mimi-content
+impl RoleIndex {
+    pub fn discriminant(&self) -> u32 {
+        match self {
+            RoleIndex::Outsider => 0_u32,
+            RoleIndex::Banned => 1,
+            RoleIndex::Regular => 2,
+            RoleIndex::Admin => 3,
+            RoleIndex::Owner => 4,
+            RoleIndex::Custom(u) => *u,
+        }
+    }
+    pub fn from_discriminant(discriminant: u32) -> Self {
+        match discriminant {
+            0 => RoleIndex::Outsider,
+            1 => RoleIndex::Banned,
+            2 => RoleIndex::Regular,
+            3 => RoleIndex::Admin,
+            4 => RoleIndex::Owner,
+            u => RoleIndex::Custom(u),
+        }
+    }
+}
+impl tls_codec::Serialize for RoleIndex {
+    fn tls_serialize<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> std::result::Result<usize, tls_codec::Error> {
+        self.discriminant().tls_serialize(writer)
+    }
+}
+impl tls_codec::DeserializeBytes for RoleIndex {
+    fn tls_deserialize_bytes(bytes: &[u8]) -> std::result::Result<(Self, &[u8]), tls_codec::Error>
+    where
+        Self: Sized,
+    {
+        let (discriminant, rest) = u32::tls_deserialize_bytes(bytes)?;
+        Ok((Self::from_discriminant(discriminant), rest))
+    }
+}
+impl Serialize for RoleIndex {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.discriminant())
+    }
+}
+impl<'de> Deserialize<'de> for RoleIndex {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let discriminant = u32::deserialize(deserializer)?;
+        Ok(Self::from_discriminant(discriminant))
+    }
 }
 
 /// The definition of a role for the room policy.
