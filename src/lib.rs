@@ -525,6 +525,99 @@ impl RoomPolicy {
         }
     }
 
+    pub fn default_trusted_private() -> Self {
+        let mut roles = BTreeMap::new();
+
+        // Regular
+        let mut regular_role_changes = BTreeMap::new();
+        regular_role_changes.insert(RoleIndex::Outsider, vec![RoleIndex::Regular]); // Invite
+        regular_role_changes.insert(RoleIndex::Regular, vec![RoleIndex::Outsider]); // Kick
+
+        // Owner
+        let mut owner_role_changes = BTreeMap::new();
+        owner_role_changes.insert(
+            RoleIndex::Outsider,
+            vec![RoleIndex::Regular, RoleIndex::Owner],
+        );
+        owner_role_changes.insert(
+            RoleIndex::Regular,
+            vec![RoleIndex::Outsider, RoleIndex::Owner],
+        );
+
+        let outsider_role = RoleInfo {
+            role_name: TlsString("Outsider".to_owned()),
+            role_description: TlsString("".to_owned()),
+            role_capabilities: Vec::new(),
+            min_participants_constraint: 0,
+            max_participants_constraint: Some(0),
+            min_active_participants_constraint: 0,
+            max_active_participants_constraint: Some(0),
+            authorized_role_changes: BTreeMap::new(),
+            self_role_changes: Vec::new(),
+        };
+
+        let regular_role = RoleInfo {
+            role_name: TlsString("Regular user".to_owned()),
+            role_description: TlsString("".to_owned()),
+            role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
+            min_participants_constraint: 0,
+            max_participants_constraint: None,
+            min_active_participants_constraint: 0,
+            max_active_participants_constraint: None,
+            authorized_role_changes: regular_role_changes,
+            self_role_changes: vec![RoleIndex::Outsider],
+        };
+
+        let owner_role = RoleInfo {
+            role_name: TlsString("Owner".to_owned()),
+            role_description: TlsString("".to_owned()),
+            role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
+            min_participants_constraint: 1,
+            max_participants_constraint: Some(1),
+            min_active_participants_constraint: 1,
+            max_active_participants_constraint: Some(1),
+            authorized_role_changes: owner_role_changes,
+            self_role_changes: vec![RoleIndex::Outsider, RoleIndex::Regular],
+        };
+
+        roles.insert(RoleIndex::Outsider, outsider_role);
+        roles.insert(RoleIndex::Regular, regular_role);
+        roles.insert(RoleIndex::Owner, owner_role);
+
+        Self {
+            roles,
+            membership_style: MembershipStyle::Ordinary,
+            multi_device: true,
+            parent_room_uri: TlsString("".to_owned()),
+            persistent_room: false,
+            delivery_notifications: Optionality::Optional,
+            read_receipts: Optionality::Optional,
+            semi_anonymous_ids: true,
+            discoverable: false,
+            link_policy: LinkPolicy {
+                on_request: true,
+                join_link: TlsString("".to_owned()),
+                multiuser: true,
+                expiration: 0,
+                link_requests: TlsString("".to_owned()),
+            },
+            logging_policy: LoggingPolicy {
+                logging: Optionality::Forbidden,
+                logging_clients: Vec::new(),
+                machine_readable_policy: TlsString("".to_owned()),
+                human_readable_policy: TlsString("".to_owned()),
+            },
+            history_sharing: HistoryPolicy {
+                history_sharing: Optionality::Forbidden,
+                who_can_share: Vec::new(),
+                automatically_share: false,
+                max_time_period: 0,
+            },
+            allowed_bots: BTreeMap::new(),
+            policy_extensions: Vec::new(),
+        }
+    }
+
     pub fn default_private() -> Self {
         let mut roles = BTreeMap::new();
 
@@ -996,8 +1089,9 @@ impl VerifiedRoomState {
         let mut members_iter = members.into_iter();
         let owner = members_iter.next().unwrap();
 
-        let mut room_state = VerifiedRoomState::new(owner.clone(), RoomPolicy::default_private())
-            .expect("we know the policy, this cannot fail");
+        let mut room_state =
+            VerifiedRoomState::new(owner.clone(), RoomPolicy::default_trusted_private())
+                .expect("we know the policy, this cannot fail");
 
         for user in members_iter {
             room_state
