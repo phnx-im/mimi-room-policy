@@ -532,6 +532,7 @@ impl RoomPolicy {
         let mut regular_role_changes = BTreeMap::new();
         regular_role_changes.insert(RoleIndex::Outsider, vec![RoleIndex::Regular]); // Invite
         regular_role_changes.insert(RoleIndex::Regular, vec![RoleIndex::Outsider]); // Kick
+        regular_role_changes.insert(RoleIndex::Owner, vec![RoleIndex::Outsider]); // Kick
 
         // Owner
         let mut owner_role_changes = BTreeMap::new();
@@ -572,9 +573,9 @@ impl RoomPolicy {
             role_name: TlsString("Owner".to_owned()),
             role_description: TlsString("".to_owned()),
             role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
-            min_participants_constraint: 1,
+            min_participants_constraint: 0,
             max_participants_constraint: Some(1),
-            min_active_participants_constraint: 1,
+            min_active_participants_constraint: 0,
             max_active_participants_constraint: Some(1),
             authorized_role_changes: owner_role_changes,
             self_role_changes: vec![RoleIndex::Outsider, RoleIndex::Regular],
@@ -1187,6 +1188,62 @@ mod tests {
 
         // Alice creates an invite-only room
         let room = VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_dm()).unwrap();
+
+        let room2 = tls_deserialize(&tls_serialize(&room));
+        assert_eq!(room, room2);
+        let room3 = cbor_deserialize(&cbor_serialize(&room));
+        assert_eq!(room, room3);
+    }
+
+    #[test]
+    fn trusted_private_room() {
+        let alice = b"alice";
+        let bob = b"bob";
+
+        // Alice creates an invite-only room
+        let mut room =
+            VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_trusted_private()).unwrap();
+
+        // Bob cannot join
+        assert_eq!(
+            room.apply_regular_proposals(
+                bob,
+                &[MimiProposal::ChangeRole {
+                    target: bob.to_vec(),
+                    role: RoleIndex::Regular,
+                }],
+            ),
+            Err(Error::NotCapable)
+        );
+
+        // Bob cannot send messages
+        assert!(!room.has_capability(bob, Capability::SendMessage));
+
+        // Alice can add Bob
+        room.apply_regular_proposals(
+            alice,
+            &[MimiProposal::ChangeRole {
+                target: bob.to_vec(),
+                role: RoleIndex::Regular,
+            }],
+        )
+        .unwrap();
+
+        // Bob can now send messages
+        assert!(room.has_capability(bob, Capability::SendMessage));
+
+        // Bob can kick Alice
+        room.apply_regular_proposals(
+            bob,
+            &[MimiProposal::ChangeRole {
+                target: alice.to_vec(),
+                role: RoleIndex::Outsider,
+            }],
+        )
+        .unwrap();
+
+        // Alice cannot send messages
+        assert!(!room.has_capability(alice, Capability::SendMessage));
 
         let room2 = tls_deserialize(&tls_serialize(&room));
         assert_eq!(room, room2);
