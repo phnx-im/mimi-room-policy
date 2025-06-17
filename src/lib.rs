@@ -73,24 +73,10 @@ pub enum Error {
     },
 }
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// The specified roles have a special features in the room policy.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    TlsSize,
-    TlsSerialize,
-    TlsDeserializeBytes,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u32)]
 pub enum RoleIndex {
     /// Outsiders are not in the room and are not trusted at all.
@@ -106,6 +92,70 @@ pub enum RoleIndex {
 
     /// Custom roles
     Custom(u32),
+}
+
+impl tls_codec::Size for RoleIndex {
+    fn tls_serialized_len(&self) -> usize {
+        0_u32.tls_serialized_len()
+    }
+}
+
+// TODO: Use macro like in mimi-content
+impl RoleIndex {
+    pub fn discriminant(&self) -> u32 {
+        match self {
+            RoleIndex::Outsider => 0_u32,
+            RoleIndex::Banned => 1,
+            RoleIndex::Regular => 2,
+            RoleIndex::Admin => 3,
+            RoleIndex::Owner => 4,
+            RoleIndex::Custom(u) => *u,
+        }
+    }
+    pub fn from_discriminant(discriminant: u32) -> Self {
+        match discriminant {
+            0 => RoleIndex::Outsider,
+            1 => RoleIndex::Banned,
+            2 => RoleIndex::Regular,
+            3 => RoleIndex::Admin,
+            4 => RoleIndex::Owner,
+            u => RoleIndex::Custom(u),
+        }
+    }
+}
+impl tls_codec::Serialize for RoleIndex {
+    fn tls_serialize<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> std::result::Result<usize, tls_codec::Error> {
+        self.discriminant().tls_serialize(writer)
+    }
+}
+impl tls_codec::DeserializeBytes for RoleIndex {
+    fn tls_deserialize_bytes(bytes: &[u8]) -> std::result::Result<(Self, &[u8]), tls_codec::Error>
+    where
+        Self: Sized,
+    {
+        let (discriminant, rest) = u32::tls_deserialize_bytes(bytes)?;
+        Ok((Self::from_discriminant(discriminant), rest))
+    }
+}
+impl Serialize for RoleIndex {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.discriminant())
+    }
+}
+impl<'de> Deserialize<'de> for RoleIndex {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let discriminant = u32::deserialize(deserializer)?;
+        Ok(Self::from_discriminant(discriminant))
+    }
 }
 
 /// The definition of a role for the room policy.
@@ -472,6 +522,100 @@ impl RoomPolicy {
             roles,
             membership_style: MembershipStyle::FixedMembership,
             ..Self::default_private()
+        }
+    }
+
+    pub fn default_trusted_private() -> Self {
+        let mut roles = BTreeMap::new();
+
+        // Regular
+        let mut regular_role_changes = BTreeMap::new();
+        regular_role_changes.insert(RoleIndex::Outsider, vec![RoleIndex::Regular]); // Invite
+        regular_role_changes.insert(RoleIndex::Regular, vec![RoleIndex::Outsider]); // Kick
+        regular_role_changes.insert(RoleIndex::Owner, vec![RoleIndex::Outsider]); // Kick
+
+        // Owner
+        let mut owner_role_changes = BTreeMap::new();
+        owner_role_changes.insert(
+            RoleIndex::Outsider,
+            vec![RoleIndex::Regular, RoleIndex::Owner],
+        );
+        owner_role_changes.insert(
+            RoleIndex::Regular,
+            vec![RoleIndex::Outsider, RoleIndex::Owner],
+        );
+
+        let outsider_role = RoleInfo {
+            role_name: TlsString("Outsider".to_owned()),
+            role_description: TlsString("".to_owned()),
+            role_capabilities: Vec::new(),
+            min_participants_constraint: 0,
+            max_participants_constraint: Some(0),
+            min_active_participants_constraint: 0,
+            max_active_participants_constraint: Some(0),
+            authorized_role_changes: BTreeMap::new(),
+            self_role_changes: Vec::new(),
+        };
+
+        let regular_role = RoleInfo {
+            role_name: TlsString("Regular user".to_owned()),
+            role_description: TlsString("".to_owned()),
+            role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
+            min_participants_constraint: 0,
+            max_participants_constraint: None,
+            min_active_participants_constraint: 0,
+            max_active_participants_constraint: None,
+            authorized_role_changes: regular_role_changes,
+            self_role_changes: vec![RoleIndex::Outsider],
+        };
+
+        let owner_role = RoleInfo {
+            role_name: TlsString("Owner".to_owned()),
+            role_description: TlsString("".to_owned()),
+            role_capabilities: vec![Capability::ReceiveMessage, Capability::SendMessage],
+            min_participants_constraint: 0,
+            max_participants_constraint: Some(1),
+            min_active_participants_constraint: 0,
+            max_active_participants_constraint: Some(1),
+            authorized_role_changes: owner_role_changes,
+            self_role_changes: vec![RoleIndex::Outsider, RoleIndex::Regular],
+        };
+
+        roles.insert(RoleIndex::Outsider, outsider_role);
+        roles.insert(RoleIndex::Regular, regular_role);
+        roles.insert(RoleIndex::Owner, owner_role);
+
+        Self {
+            roles,
+            membership_style: MembershipStyle::Ordinary,
+            multi_device: true,
+            parent_room_uri: TlsString("".to_owned()),
+            persistent_room: false,
+            delivery_notifications: Optionality::Optional,
+            read_receipts: Optionality::Optional,
+            semi_anonymous_ids: true,
+            discoverable: false,
+            link_policy: LinkPolicy {
+                on_request: true,
+                join_link: TlsString("".to_owned()),
+                multiuser: true,
+                expiration: 0,
+                link_requests: TlsString("".to_owned()),
+            },
+            logging_policy: LoggingPolicy {
+                logging: Optionality::Forbidden,
+                logging_clients: Vec::new(),
+                machine_readable_policy: TlsString("".to_owned()),
+                human_readable_policy: TlsString("".to_owned()),
+            },
+            history_sharing: HistoryPolicy {
+                history_sharing: Optionality::Forbidden,
+                who_can_share: Vec::new(),
+                automatically_share: false,
+                max_time_period: 0,
+            },
+            allowed_bots: BTreeMap::new(),
+            policy_extensions: Vec::new(),
         }
     }
 
@@ -946,8 +1090,9 @@ impl VerifiedRoomState {
         let mut members_iter = members.into_iter();
         let owner = members_iter.next().unwrap();
 
-        let mut room_state = VerifiedRoomState::new(owner.clone(), RoomPolicy::default_private())
-            .expect("we know the policy, this cannot fail");
+        let mut room_state =
+            VerifiedRoomState::new(owner.clone(), RoomPolicy::default_trusted_private())
+                .expect("we know the policy, this cannot fail");
 
         for user in members_iter {
             room_state
@@ -1043,6 +1188,62 @@ mod tests {
 
         // Alice creates an invite-only room
         let room = VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_dm()).unwrap();
+
+        let room2 = tls_deserialize(&tls_serialize(&room));
+        assert_eq!(room, room2);
+        let room3 = cbor_deserialize(&cbor_serialize(&room));
+        assert_eq!(room, room3);
+    }
+
+    #[test]
+    fn trusted_private_room() {
+        let alice = b"alice";
+        let bob = b"bob";
+
+        // Alice creates an invite-only room
+        let mut room =
+            VerifiedRoomState::new(alice.to_vec(), RoomPolicy::default_trusted_private()).unwrap();
+
+        // Bob cannot join
+        assert_eq!(
+            room.apply_regular_proposals(
+                bob,
+                &[MimiProposal::ChangeRole {
+                    target: bob.to_vec(),
+                    role: RoleIndex::Regular,
+                }],
+            ),
+            Err(Error::NotCapable)
+        );
+
+        // Bob cannot send messages
+        assert!(!room.has_capability(bob, Capability::SendMessage));
+
+        // Alice can add Bob
+        room.apply_regular_proposals(
+            alice,
+            &[MimiProposal::ChangeRole {
+                target: bob.to_vec(),
+                role: RoleIndex::Regular,
+            }],
+        )
+        .unwrap();
+
+        // Bob can now send messages
+        assert!(room.has_capability(bob, Capability::SendMessage));
+
+        // Bob can kick Alice
+        room.apply_regular_proposals(
+            bob,
+            &[MimiProposal::ChangeRole {
+                target: alice.to_vec(),
+                role: RoleIndex::Outsider,
+            }],
+        )
+        .unwrap();
+
+        // Alice cannot send messages
+        assert!(!room.has_capability(alice, Capability::SendMessage));
 
         let room2 = tls_deserialize(&tls_serialize(&room));
         assert_eq!(room, room2);
