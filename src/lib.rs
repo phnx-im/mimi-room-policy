@@ -907,18 +907,18 @@ pub struct RoomState {
 }
 
 impl RoomState {
-    pub fn user_role(&self, user_id: &[u8]) -> RoleIndex {
+    fn user_role(&self, user_id: &[u8]) -> RoleIndex {
         self.users
             .get(user_id)
             .cloned()
             .unwrap_or(RoleIndex::Outsider)
     }
 
-    pub fn user_capabilities(&self, user_id: &[u8]) -> &[Capability] {
+    fn user_capabilities(&self, user_id: &[u8]) -> &[Capability] {
         &self.policy.roles[&self.user_role(user_id)].role_capabilities
     }
 
-    pub fn has_capability(&self, user_id: &[u8], capability: Capability) -> bool {
+    fn has_capability(&self, user_id: &[u8], capability: Capability) -> bool {
         self.user_capabilities(user_id).contains(&capability)
     }
 
@@ -1150,6 +1150,10 @@ impl VerifiedRoomState {
         *self = Self::verify(state)?;
 
         Ok(())
+    }
+
+    pub fn users(&self) -> &BTreeMap<Vec<u8>, RoleIndex> {
+        &self.0.users
     }
 }
 
